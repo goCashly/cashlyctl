@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: cashlyctl
+Version: 0.1.0
+Summary: Cashly command‑line utility for quick admin and developer workflows.
+Home-page: https://github.com/your‑org/cashlyctl
+Author: Cashly Engineering
+Author-email: engineering@gocashly.io
+License: MIT
+Project-URL: Source, https://github.com/your‑org/cashlyctl
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Requires-Python: >=3.11, <3.12
+Description-Content-Type: text/markdown
+Requires-Dist: typer[all]>=0.12.0
+Requires-Dist: click>=8.1
+Requires-Dist: requests>=2.32.0
+Requires-Dist: textual~=0.58.0
+Requires-Dist: pyfiglet>=1.0.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
