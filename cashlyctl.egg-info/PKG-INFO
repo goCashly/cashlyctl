@@ -3,15 +3,15 @@ Name: cashlyctl
 Version: 0.1.0
 Summary: Cashly command‑line utility for quick admin and developer workflows.
 Home-page: https://github.com/your‑org/cashlyctl
-Author: Cashly Engineering
-Author-email: engineering@gocashly.io
+Author: Cashly
+Author-email: operations@gocashly.io
 License: MIT
 Project-URL: Source, https://github.com/your‑org/cashlyctl
 Classifier: Programming Language :: Python :: 3 :: Only
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Environment :: Console
 Classifier: Intended Audience :: Developers
-Requires-Python: >=3.11, <3.12
+Requires-Python: >=3.12
 Description-Content-Type: text/markdown
 Requires-Dist: typer[all]>=0.12.0
 Requires-Dist: click>=8.1

@@ -8,10 +8,10 @@ from setuptools import find_packages, setup
 NAME = "cashlyctl"
 DESCRIPTION = "Cashly command‑line utility for quick admin and developer workflows."
 URL = "https://github.com/your‑org/cashlyctl"          # adjust if you publish
-AUTHOR = "Cashly Engineering"
-AUTHOR_EMAIL = "engineering@gocashly.io"
+AUTHOR = "Cashly"
+AUTHOR_EMAIL = "operations@gocashly.io"
 LICENSE = "MIT"
-PY_VERSION = ">=3.11, <3.12"
+PY_VERSION = ">=3.12"
 
 # --------------------------------------------------------------------------- #
 # Helper – read README if present
