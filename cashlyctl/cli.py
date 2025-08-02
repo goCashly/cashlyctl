@@ -20,6 +20,7 @@ from .tui import run as run_tui
 
 # Import the sub‑command groups
 from .commands import borrower as borrower_cmd
+from .commands.pathfinder import pathfinder as pathfinder_command
 
 app = typer.Typer(
     name="cashlyctl",
@@ -29,6 +30,7 @@ app = typer.Typer(
 
 # Register groups
 app.add_typer(borrower_cmd.app, name="borrower", help="Create and manage borrowers")
+app.command("pathfinder", help="Run Pathfinder queries")(pathfinder_command)
 
 # --------------------------------------------------------------------------- #
 # Optional: quick health‑check command
