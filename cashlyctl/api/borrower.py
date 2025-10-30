@@ -2,11 +2,14 @@
 """
 Thin client helpers for Borrower endpoints.
 Currently supports *create* only, posting to `/v1/submit`.
+
+The helper relies on :func:`cashlyctl.config.make_session`, which now loads
+credentials from `.env`/environment variables and attaches `X-API-KEY`
+automatically when ``CASHLY_API_KEY`` is present.
 """
 
 from __future__ import annotations
 
-import json
 from uuid import uuid4
 from typing import Any, Dict
 
@@ -26,10 +29,11 @@ def create(payload: Dict[str, Any], *, session: requests.Session | None = None) 
     ----------
     payload : dict
         Borrower data in the shape expected by the backend.
-        If the backend does NOT auto‑generate `IDBorrower`,
+        If the backend does NOT auto-generate `IDBorrower`,
         we inject a UUID4 hex field automatically.
     session : requests.Session | None
-        Re‑use an existing session, or we’ll build one on the fly.
+        Re-use an existing session, or we’ll build one on the fly
+        (complete with Accept + optional X-API-KEY headers).
 
     Returns
     -------
