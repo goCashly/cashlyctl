@@ -29,6 +29,7 @@ REQUIRED = [
     "requests>=2.32.0",
     "textual~=0.58.0",
     "pyfiglet>=1.0.0",
+    "python-dotenv>=1.0.0",
 ]
 
 EXTRAS = {
