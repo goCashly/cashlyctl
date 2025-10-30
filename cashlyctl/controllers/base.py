@@ -1,4 +1,4 @@
-from typing import Callable, Dict, Any, Awaitable
+from typing import Callable, Dict, Any
 import inspect
 
 class CommandRouter:
@@ -21,16 +21,30 @@ class CommandRouter:
                     self.register(name, func)
 
     async def execute(self, app, cmdline: str):
-        """Parse and execute a command string."""
+        """Parse and execute a command string, routing output to log pane."""
         viewer = app.query_one("#viewer")
+        logview = None
+        try:
+            logview = app.query_one("#log")
+        except Exception:
+            pass  # if not present yet
+
         parts = cmdline.strip().split()
         if not parts:
             return
 
         cmd, args = parts[0].lower(), parts[1:]
         func = self.commands.get(cmd)
+
+        # Echo command to log
+        if logview:
+            logview.write(f"[dim]> {cmdline}[/dim]")
+
         if not func:
-            viewer.write(f"[red]Unknown command:[/red] {cmd}")
+            if logview:
+                logview.write(f"[red]Unknown command:[/red] {cmd}")
+            else:
+                viewer.write(f"[red]Unknown command:[/red] {cmd}")
             return
 
         try:
@@ -38,4 +52,5 @@ class CommandRouter:
             if inspect.isawaitable(result):
                 await result
         except Exception as e:
-            viewer.write(f"[red]Command error:[/red] {e}")
+            target = logview or viewer
+            target.write(f"[red]Command error:[/red] {e}")

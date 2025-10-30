@@ -20,11 +20,21 @@ Screen {
 }
 
 #viewer {
-    width: 40%;
+    width: 45%;
     border: solid #586e75;
 }
 
+#right {
+    width: 25%;
+    layout: vertical;
+}
+
 #commands {
-    width: 30%;
+    height: 40%;
+    border: solid #586e75;
+}
+
+#log {
+    height: 60%;
     border: solid #586e75;
 }

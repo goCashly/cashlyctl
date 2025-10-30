@@ -1,15 +1,15 @@
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Input
 
 from .widgets.filetree import FileTreePanel
 from .widgets.jsonviewer import JSONViewer
 from .widgets.keyhelp import KeyHelp
+from .widgets.logview import LogView
 from .controllers import build_router
 
 
 class CashlyCTL(App):
-    """Main TUI for exploring JSON files in FILES/."""
     CSS_PATH = "theme.tcss"
     BINDINGS = [("q", "quit", "Quit")]
 
@@ -21,7 +21,9 @@ class CashlyCTL(App):
         with Horizontal(id="body"):
             yield FileTreePanel(id="files")
             yield JSONViewer(id="viewer")
-            yield KeyHelp(id="commands")
+            with Vertical(id="right"):
+                yield KeyHelp(id="commands")
+                yield LogView(id="log")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         cmdline = event.value.strip()
