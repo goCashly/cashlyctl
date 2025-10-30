@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from click.testing import CliRunner
 from pyfiglet import Figlet
@@ -26,7 +26,31 @@ from . import cli as cashly_cli  # noqa: E402
 # --------------------------------------------------------------------------- #
 HISTORY_FILE = Path.home() / ".cashlyctl_history"
 MAX_HISTORY = 100
-FILES_ROOT = Path(__file__).resolve().parent / "FILES"
+FILES_DIRNAME = "FILES"
+
+
+def _candidate_files_roots() -> Iterable[Path]:
+    """Yield possible locations for the ``FILES`` directory."""
+
+    module_dir = Path(__file__).resolve().parent
+    project_root = module_dir.parent
+
+    yield Path.cwd() / FILES_DIRNAME
+    yield project_root / FILES_DIRNAME
+
+
+def _resolve_files_root() -> Path:
+    """Return the most appropriate path for the ``FILES`` tree."""
+
+    candidates = list(_candidate_files_roots())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+FILES_ROOT = _resolve_files_root()
 UPLOAD_COMMAND_TEMPLATE = "lender upload-file {path}"
 
 
@@ -236,15 +260,6 @@ class CashlyTUI(App):
 
     # ----------------------------------------------------------- compose
     def compose(self) -> ComposeResult:
-        # Create FILES directory if it doesn't exist
-        FILES_ROOT.mkdir(exist_ok=True, parents=True)
-        
-        # Add some debug info
-        self.log(f"FILES_ROOT: {FILES_ROOT}")
-        self.log(f"EXISTS: {FILES_ROOT.exists()}")
-        if FILES_ROOT.exists():
-            self.log(f"CONTENTS: {list(FILES_ROOT.iterdir())}")
-        
         yield Vertical(
             HelpPane(id="help"),
             Horizontal(
