@@ -1,3 +1,6 @@
+from pathlib import Path
+from typing import Iterable
+
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input
@@ -7,6 +10,7 @@ from .widgets.filetree import FileTreePanel
 from .widgets.jsonviewer import JSONViewer
 from .widgets.logview import LogView
 from .widgets.networkpanel import NetworkPanel
+from .widgets.selectedfiles import SelectedFilesView
 from .controllers import build_router
 
 
@@ -16,6 +20,8 @@ class CashlyCTL(App):
 
     def on_mount(self):
         self.router = build_router()
+        self.selected_file_paths: list[Path] = []
+        self.update_selected_files([])
 
     def compose(self) -> ComposeResult:
         """Build the layout of the TUI."""
@@ -25,7 +31,18 @@ class CashlyCTL(App):
             yield JSONViewer(id="viewer")
             with Vertical(id="right"):
                 yield NetworkPanel("https://crm-api.gocashly.io/v1/submit", id="network")
+                yield SelectedFilesView(id="selected-files")
                 yield LogView(id="log")
+
+    def update_selected_files(self, paths: Iterable[Path]) -> None:
+        """Update the tracked selection and notify the selection panel."""
+
+        self.selected_file_paths = [Path(p) for p in paths]
+        try:
+            panel = self.query_one("#selected-files", SelectedFilesView)
+            panel.update_selection(self.selected_file_paths)
+        except Exception:
+            pass
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Execute commands typed into the header input."""
