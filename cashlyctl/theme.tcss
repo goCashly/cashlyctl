@@ -1,0 +1,30 @@
+Screen {
+    layout: vertical;
+    background: #001b1b;
+    color: #93a1a1;
+}
+
+#header {
+    height: 3;
+    background: #002b36;
+    color: #93a1a1;
+}
+
+#body {
+    layout: horizontal;
+}
+
+#files {
+    width: 30%;
+    border: solid #586e75;
+}
+
+#viewer {
+    width: 40%;
+    border: solid #586e75;
+}
+
+#commands {
+    width: 30%;
+    border: solid #586e75;
+}

@@ -1,0 +1,16 @@
+{
+  "IDLenderProduct": "opp-1b",
+  "IDLender": "oppono",
+  "lenderName": "Oppono Lending",
+  "minCredit": 640,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": "5.99%",
+  "fee": "1.99%",
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"],
+  "city": ["Toronto", "Mississauga", "Hamilton", "Ottawa", "Windsor", "Guelph", "Brampton", "Oakville", "Kitchener", "Waterloo", "Niagara", "London", "Barrie"]
+}

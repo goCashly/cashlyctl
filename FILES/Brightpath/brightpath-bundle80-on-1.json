@@ -1,0 +1,30 @@
+﻿{
+    "IDLenderProduct":  "brightpath-bundle80-on-1",
+    "IDLender":  "brightpath",
+    "lenderName":  "Brightpath Capital Corporation",
+    "minCredit":  600,
+    "maxCredit":  900,
+    "minLTV":  1,
+    "maxLTV":  80,
+    "loan_position":  "First",
+    "rate":  8.49,
+    "fee":  1.99,
+    "status":  "Active",
+    "term":  12,
+    "province":  [
+                     "Ontario"
+                 ],
+    "propertyType":  [
+                         "Detached",
+                         "Semi-Detached",
+                         "Townhouse"
+                     ],
+    "dealType":  [
+                     "purchase",
+                     "refinance"
+                 ],
+    "loanType":  [
+                     "mortgage"
+                 ],
+    "notes":  "Brightpath Bundle: 1st to 75% + 2nd to 80%. Owner-occupied only. 600+ beacon. No condos. Combined lending cap $1.25M."
+}

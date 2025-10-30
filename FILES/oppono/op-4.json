@@ -1,0 +1,16 @@
+{
+  "IDLenderProduct": "opp-heloc-1",
+  "IDLender": "oppono",
+  "lenderName": "Oppono Lending",
+  "minCredit": 640,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": "6.74%",
+  "fee": "2.24%",
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"],
+  "city": ["Toronto", "Mississauga", "Hamilton", "Ottawa", "Windsor", "Guelph", "Brampton", "Oakville", "Kitchener", "Waterloo", "Niagara", "London", "Barrie"]
+}

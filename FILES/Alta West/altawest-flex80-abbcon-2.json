@@ -1,0 +1,18 @@
+{
+  "IDLenderProduct": "altawest-flex80-abbcon-2",
+  "IDLender": "altawest",
+  "lenderName": "Alta West Capital",
+  "minCredit": 640,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 80,
+  "loan_position": "Second",
+  "rate": 11.99,
+  "fee": 2.99,
+  "status": "Active",
+  "term": 12,
+  "province": ["Alberta", "Ontario"],
+  "propertyType": ["Freehold", "Condo"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"]
+}

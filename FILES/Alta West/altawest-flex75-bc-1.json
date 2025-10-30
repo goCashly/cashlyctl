@@ -1,0 +1,18 @@
+{
+  "IDLenderProduct": "altawest-flex75-bc-1",
+  "IDLender": "altawest",
+  "lenderName": "Alta West Capital",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 71,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": 8.99,
+  "fee": 2.99,
+  "status": "Active",
+  "term": 24,
+  "province": ["British Columbia"],
+  "propertyType": ["Freehold", "Condo"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"]
+}

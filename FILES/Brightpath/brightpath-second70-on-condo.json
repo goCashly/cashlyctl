@@ -1,0 +1,27 @@
+﻿{
+    "IDLenderProduct":  "brightpath-second70-on-condo",
+    "IDLender":  "brightpath",
+    "lenderName":  "Brightpath Capital Corporation",
+    "minCredit":  600,
+    "maxCredit":  900,
+    "minLTV":  1,
+    "maxLTV":  70,
+    "loan_position":  "Second",
+    "rate":  11.49,
+    "fee":  3.49,
+    "status":  "Active",
+    "term":  12,
+    "province":  [
+                     "Ontario"
+                 ],
+    "propertyType":  [
+                         "Condo"
+                     ],
+    "dealType":  [
+                     "refinance"
+                 ],
+    "loanType":  [
+                     "mortgage"
+                 ],
+    "notes":  "2nd mortgages on condos up to 70% LTV. Owner-occupied only. No rentals or Airbnbs. 600+ beacon."
+}

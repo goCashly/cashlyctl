@@ -1,0 +1,19 @@
+{
+  "IDLenderProduct": "fisgard-second75-on-flexibility",
+  "IDLender": "fisgard",
+  "lenderName": "Fisgard Capital Corporation",
+  "minCredit": 580,
+  "maxCredit": 900,
+  "minLTV": 66,
+  "maxLTV": 75,
+  "loan_position": "Second",
+  "rate": 11.99,
+  "fee": 2,
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario", "British Columbia", "Alberta"],
+  "propertyType": ["Detached", "Townhouse", "Duplex"],
+  "dealType": ["purchase", "refinance", "debt_consolidation"],
+  "loanType": ["mortgage"],
+  "notes": "Owner-occupied only. Flexibility pricing with 2% fee. Two-year option available."
+}

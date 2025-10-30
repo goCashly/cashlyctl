@@ -1,0 +1,17 @@
+{
+  "IDLenderProduct": "vault-classic-60",
+  "IDLender": "vault",
+  "lenderName": "Vault Mortgage",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 56,
+  "maxLTV": 60,
+  "loan_position": "First",
+  "rate": "5.99%",
+  "fee": "0.99%",
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"],
+  "city": ["Toronto", "Mississauga", "Vaughan", "Hamilton", "Ottawa", "Markham", "Oakville", "Guelph"],
+  "conditions": "Classic: 2-month interest penalty; Add 0.25% for rentals"
+}

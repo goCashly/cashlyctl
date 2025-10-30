@@ -1,0 +1,19 @@
+{
+  "IDLenderProduct": "fisgard-first75-on-flexibility",
+  "IDLender": "fisgard",
+  "lenderName": "Fisgard Capital Corporation",
+  "minCredit": 580,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": 7.49,
+  "fee": 1,
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario", "British Columbia", "Alberta"],
+  "propertyType": ["Detached", "Semi-Detached", "Townhouse", "Duplex", "Condo"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"],
+  "notes": "Optional 1-year or 2-year term. First year closed (3-month interest), second year open. Rental condos +1% rate."
+}

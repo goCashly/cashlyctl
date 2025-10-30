@@ -1,0 +1,16 @@
+{
+  "IDLenderProduct": "extend-1a",
+  "IDLender": "extend",
+  "lenderName": "Extend Financial",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": "Prime + 5.04%",
+  "fee": "Greater of $2500 or 2.5%",
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"],
+  "city": ["Toronto", "Ottawa", "Hamilton", "Mississauga", "Brampton", "Vaughan", "Markham", "Oakville", "Guelph"]
+}

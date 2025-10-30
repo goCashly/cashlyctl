@@ -1,0 +1,19 @@
+{
+  "IDLenderProduct": "sdccapital-first70-on-1",
+  "IDLender": "sdccapital",
+  "lenderName": "SDC Capital",
+  "minCredit": 500,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 70,
+  "loan_position": "First",
+  "rate": 8.99,
+  "fee": 2.5,
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"],
+  "propertyType": ["Farm", "Vacant Land", "Recreational"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"],
+  "notes": "Farm and rural properties up to 70% LTV. Recreational or unconventional land eligible. Consider case-by-case."
+}

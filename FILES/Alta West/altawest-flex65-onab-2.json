@@ -1,0 +1,18 @@
+{
+  "IDLenderProduct": "altawest-flex65-onab-2",
+  "IDLender": "altawest",
+  "lenderName": "Alta West Capital",
+  "minCredit": 550,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 65,
+  "loan_position": "Second",
+  "rate": 9.99,
+  "fee": 3.5,
+  "status": "Active",
+  "term": 12,
+  "province": ["Alberta", "Ontario"],
+  "propertyType": ["Freehold", "Condo"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"]
+}

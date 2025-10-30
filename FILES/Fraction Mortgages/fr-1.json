@@ -1,0 +1,18 @@
+{
+  "IDLenderProduct": "fraction-50",
+  "IDLender": "fraction",
+  "lenderName": "Fraction Mortgage",
+  "minCredit": 660,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 50,
+  "loan_position": "First",
+  "rate": 6.89,
+  "fee": "2% + 1% Broker Fee",
+  "status": "Active",
+  "term": 60,
+  "province": ["Ontario", "Alberta", "British Columbia"],
+  "propertyType": ["Owner-occupied"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"]
+}

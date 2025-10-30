@@ -1,0 +1,19 @@
+{
+  "IDLenderProduct": "sdccapital-first65-on-1",
+  "IDLender": "sdccapital",
+  "lenderName": "SDC Capital",
+  "minCredit": 500,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 65,
+  "loan_position": "First",
+  "rate": 8.49,
+  "fee": 2.5,
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"],
+  "propertyType": ["Mixed Commercial", "Commercial", "Light Industrial"],
+  "dealType": ["purchase", "refinance", "bridge"],
+  "loanType": ["mortgage"],
+  "notes": "Commercial, mixed, or industrial properties. Max 65% LTV. Suitable for self-employed or unconventional income borrowers."
+}

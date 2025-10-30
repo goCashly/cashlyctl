@@ -1,0 +1,15 @@
+{
+  "IDLenderProduct": "vault-flex-75-2yr",
+  "IDLender": "vault",
+  "lenderName": "Vault Mortgage",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 71,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": "7.49%",
+  "fee": "2.00%",
+  "status": "Active",
+  "term": 24,
+  "province": ["Ontario"]
+}

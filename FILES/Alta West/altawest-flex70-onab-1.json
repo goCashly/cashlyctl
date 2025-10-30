@@ -1,0 +1,18 @@
+{
+  "IDLenderProduct": "altawest-flex70-onab-1",
+  "IDLender": "altawest",
+  "lenderName": "Alta West Capital",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 66,
+  "maxLTV": 70,
+  "loan_position": "First",
+  "rate": 7.49,
+  "fee": 3.99,
+  "status": "Active",
+  "term": 24,
+  "province": ["Ontario", "Alberta"],
+  "propertyType": ["Freehold", "Condo"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"]
+}

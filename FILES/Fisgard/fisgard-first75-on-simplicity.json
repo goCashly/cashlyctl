@@ -1,0 +1,19 @@
+{
+  "IDLenderProduct": "fisgard-first75-on-simplicity",
+  "IDLender": "fisgard",
+  "lenderName": "Fisgard Capital Corporation",
+  "minCredit": 580,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": 8.49,
+  "fee": 0,
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario", "British Columbia", "Alberta"],
+  "propertyType": ["Detached", "Semi-Detached", "Townhouse", "Duplex"],
+  "dealType": ["purchase", "refinance"],
+  "loanType": ["mortgage"],
+  "notes": "Owner occupied or rental. Fully open 1-year term. Min loan $100k, up to $2M value. Min ERS 580."
+}

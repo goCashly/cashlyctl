@@ -1,0 +1,15 @@
+{
+  "IDLenderProduct": "vault-classic-65",
+  "IDLender": "vault",
+  "lenderName": "Vault Mortgage",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 61,
+  "maxLTV": 65,
+  "loan_position": "First",
+  "rate": "6.25%",
+  "fee": "0.99%",
+  "status": "Active",
+  "term": 12,
+  "province": ["Ontario"]
+}
