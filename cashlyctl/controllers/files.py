@@ -1,17 +1,26 @@
 from pathlib import Path
-import json, aiofiles
+import json, aiofiles, os, asyncio
+from dotenv import load_dotenv
+import httpx
+
 from ..widgets.jsonviewer import JSONViewer
 from ..widgets.filetree import FileTreePanel
+from ..widgets.networkpanel import NetworkPanel
 from .base import CommandRouter
 
+# Load environment variables
+load_dotenv()
+
+API_URL = os.getenv("CASHLY_API_URL", "https://crm-api.gocashly.io/v1/submit")
+API_KEY = os.getenv("CASHLY_API_KEY")
 FILES_ROOT = Path(__file__).resolve().parent.parent.parent / "FILES"
+
 
 # ─── BASIC FILE COMMANDS ─────────────────────────────────────────────
 
 async def command_refresh(app, args):
     """Reload the file tree."""
     filetree = app.query_one("#files", FileTreePanel)
-    viewer = app.query_one("#viewer", JSONViewer)
     await filetree.reload()
     CommandRouter.sublog(app, "[green]File tree refreshed.[/green]")
 
@@ -39,7 +48,6 @@ async def command_open(app, args):
             data = json.load(f)
         pretty = json.dumps(data, indent=2, ensure_ascii=False)
 
-        # remember file path for edit/save
         viewer.current_path = path
         viewer.clear()
         viewer.write(pretty)
@@ -100,7 +108,6 @@ async def command_save(app, args):
     text = await viewer.exit_edit_mode()
 
     try:
-        # validate JSON before writing
         json.loads(text)
         async with aiofiles.open(viewer.current_path, "w", encoding="utf-8") as f:
             await f.write(text)
@@ -108,3 +115,56 @@ async def command_save(app, args):
         viewer.display_json(text)
     except Exception as e:
         CommandRouter.sublog(app, f"[red]Error saving file:[/red] {e}")
+
+
+# ─── SUBMIT COMMAND ──────────────────────────────────────────────────
+
+async def command_submit(app, args):
+    """Submit a JSON file to the Cashly API."""
+    viewer = app.query_one("#viewer", JSONViewer)
+    network_panel = app.query_one("#network", NetworkPanel)
+
+    # Determine which file to submit
+    if args:
+        name = args[0]
+        matches = list(FILES_ROOT.rglob(name))
+        if not matches:
+            CommandRouter.sublog(app, f"[red]No file found named {name}[/red]")
+            return
+        path = matches[0]
+    else:
+        path = getattr(viewer, "current_path", None)
+        if not path:
+            CommandRouter.sublog(app, "[yellow]No file open.[/yellow]")
+            return
+
+    # Read and submit
+    try:
+        async with aiofiles.open(path, "r", encoding="utf-8-sig") as f:
+            body = await f.read()
+
+        headers = {"Content-Type": "application/json"}
+        if API_KEY:
+            headers["X-API-KEY"] = API_KEY
+
+        start = asyncio.get_event_loop().time()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(API_URL, data=body, headers=headers)
+        latency = (asyncio.get_event_loop().time() - start) * 1000
+
+        if resp.status_code < 400:
+            CommandRouter.sublog(app, f"[green]Submitted successfully:[/green] {path.name}")
+            network_panel.record_submission(path.name, ok=True, latency=latency)
+            try:
+                viewer.display_json(json.dumps(resp.json(), indent=2))
+            except Exception:
+                viewer.display_json(resp.text)
+        else:
+            CommandRouter.sublog(app, f"[red]Submit failed ({resp.status_code}):[/red] {resp.text[:120]}")
+            network_panel.record_submission(path.name, ok=False, latency=latency)
+    except Exception as e:
+        CommandRouter.sublog(app, f"[red]Error submitting file:[/red] {e}")
+        try:
+            network_panel.record_submission(path.name, ok=False)
+        except Exception:
+            pass

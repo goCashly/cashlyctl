@@ -5,8 +5,8 @@ from textual.events import Key
 
 from .widgets.filetree import FileTreePanel
 from .widgets.jsonviewer import JSONViewer
-from .widgets.keyhelp import KeyHelp
 from .widgets.logview import LogView
+from .widgets.networkpanel import NetworkPanel
 from .controllers import build_router
 
 
@@ -18,15 +18,17 @@ class CashlyCTL(App):
         self.router = build_router()
 
     def compose(self) -> ComposeResult:
+        """Build the layout of the TUI."""
         yield Input(placeholder="Command line", id="header")
         with Horizontal(id="body"):
             yield FileTreePanel(id="files")
             yield JSONViewer(id="viewer")
             with Vertical(id="right"):
-                yield KeyHelp(id="commands")
+                yield NetworkPanel("https://crm-api.gocashly.io/v1/submit", id="network")
                 yield LogView(id="log")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Execute commands typed into the header input."""
         cmdline = event.value.strip()
         event.input.value = ""
         if cmdline:
