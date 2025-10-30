@@ -34,33 +34,49 @@ class CashlyCTL(App):
 
     # ─── Keyboard Shortcuts ────────────────────────────────────────────
     async def on_key(self, event: Key) -> None:
-        """Handle Ctrl+S and Esc during edit mode."""
+        """Handle Ctrl+S, Ctrl+X, and Esc during edit mode."""
         viewer = self.query_one("#viewer")
 
+        # if we're not inside edit mode, ignore
         if not getattr(viewer, "editing", False):
             return
 
-        key = event.key.lower()
+        k = event.key.lower()
+        is_ctrl_s = (k in ("ctrl+s", "ctrl_s")) or (k == "s" and event.ctrl)
+        is_ctrl_x = (k in ("ctrl+x", "ctrl_x")) or (k == "x" and event.ctrl)
+        is_escape = k == "escape"
 
-        # Robust Ctrl+S detection across Textual versions
-        ctrl_s = key in ("ctrl+s", "ctrl_s") or (
-            key == "s" and getattr(event, "ctrl", False)
-        )
-
-        if ctrl_s:
+        # ─── Save (Ctrl+S)
+        if is_ctrl_s:
             event.stop()
             from .controllers.files import command_save
             await command_save(self, [])
-            header = self.query_one("#header")
-            self.set_focus(header)
+            self.set_focus(self.query_one("#header"))
             return
 
-        # Esc → Cancel editing
-        if key == "escape":
+        # ─── Discard (Ctrl+X)
+        if is_ctrl_x:
             event.stop()
-            await viewer.exit_edit_mode()
             from .controllers.base import CommandRouter
+            await viewer.exit_edit_mode()
+            CommandRouter.sublog(self, "[yellow]Edit closed without saving.[/yellow]")
+
+            # reload original JSON
+            try:
+                with open(viewer.current_path, "r", encoding="utf-8-sig") as f:
+                    text = f.read()
+                viewer.display_json(text)
+            except Exception as e:
+                CommandRouter.sublog(self, f"[red]Error reloading file:[/red] {e}")
+
+            self.set_focus(self.query_one("#header"))
+            return
+
+        # ─── Cancel (Esc)
+        if is_escape:
+            event.stop()
+            from .controllers.base import CommandRouter
+            await viewer.exit_edit_mode()
             CommandRouter.sublog(self, "[yellow]Edit cancelled.[/yellow]")
-            header = self.query_one("#header")
-            self.set_focus(header)
+            self.set_focus(self.query_one("#header"))
             return

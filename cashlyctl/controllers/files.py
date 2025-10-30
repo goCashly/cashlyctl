@@ -15,6 +15,7 @@ async def command_refresh(app, args):
     await filetree.reload()
     CommandRouter.sublog(app, "[green]File tree refreshed.[/green]")
 
+
 async def command_open(app, args):
     """Open and display a JSON file."""
     viewer = app.query_one("#viewer", JSONViewer)
@@ -38,11 +39,11 @@ async def command_open(app, args):
             data = json.load(f)
         pretty = json.dumps(data, indent=2, ensure_ascii=False)
 
-        # 🔹 remember the file path for edit/save
+        # remember file path for edit/save
         viewer.current_path = path
-
         viewer.clear()
         viewer.write(pretty)
+
         CommandRouter.sublog(app, f"[green]Opened {path.relative_to(FILES_ROOT)}[/green]")
     except Exception as e:
         CommandRouter.sublog(app, f"[red]Error loading JSON:[/red] {e}")
@@ -51,8 +52,33 @@ async def command_open(app, args):
 # ─── EDIT / SAVE COMMANDS ─────────────────────────────────────────────
 
 async def command_edit(app, args):
-    """Enter inline editing mode for the current file."""
+    """Enter inline editing mode for a file (or current one if none provided)."""
     viewer = app.query_one("#viewer", JSONViewer)
+    filetree = app.query_one("#files", FileTreePanel)
+
+    # if filename provided → open + edit immediately
+    if args:
+        name = args[0]
+        matches = list(FILES_ROOT.rglob(name))
+        if not matches:
+            CommandRouter.sublog(app, f"[red]No file found named {name}[/red]")
+            return
+
+        path = matches[0]
+        await filetree.focus_path(path)
+        viewer.current_path = path
+
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read()
+            viewer.clear()
+            await viewer.enter_edit_mode(text)
+            CommandRouter.sublog(app, f"[cyan]Editing {path.relative_to(FILES_ROOT)}[/cyan]")
+        except Exception as e:
+            CommandRouter.sublog(app, f"[red]Error opening file:[/red] {e}")
+        return
+
+    # if no filename → edit current file
     if not getattr(viewer, "current_path", None):
         CommandRouter.sublog(app, "[yellow]No file open.[/yellow]")
         return
