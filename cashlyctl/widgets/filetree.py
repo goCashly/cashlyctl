@@ -3,7 +3,6 @@ from pathlib import Path
 import json
 from .jsonviewer import JSONViewer
 
-
 FILES_ROOT = Path(__file__).resolve().parent.parent.parent / "FILES"
 
 
@@ -21,7 +20,7 @@ class FileTreePanel(DirectoryTree):
 
         # Only allow .json files
         if path.suffix.lower() != ".json":
-            viewer.write(f"[yellow]Not a JSON file: {path.name}[/yellow]")
+            viewer.write(f"[yellow]Not a JSON file:[/yellow] {path.name}")
             return
 
         try:
@@ -36,3 +35,19 @@ class FileTreePanel(DirectoryTree):
             viewer.write(f"[red]Error reading JSON:[/red] Invalid format → {e}")
         except Exception as e:
             viewer.write(f"[red]Unexpected error:[/red] {e}")
+
+    async def focus_path(self, path: Path) -> None:
+        """Expand the tree and focus on a given file path."""
+        viewer = self.app.query_one("#viewer", JSONViewer)
+        try:
+            node = await self.expand_to_path(path)
+            if node:
+                # move focus to the node so it’s visually selected
+                self.focus_node(node)
+                self.scroll_to_node(node)
+                # trigger file load
+                await self.on_directory_tree_file_selected(
+                    type("FileSelected", (), {"path": path})()
+                )
+        except Exception as e:
+            viewer.write(f"[red]Could not open:[/red] {e}")
