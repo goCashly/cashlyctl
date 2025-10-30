@@ -7,8 +7,8 @@ Usage examples:
     # Create a borrower
     $ cashlyctl borrower create --first-name Safraz --last-name Ally --annual-income 85000
 
-    # (Future) Delete a borrower
-    $ cashlyctl borrower delete --id-borrower BORR‑123
+    # Upload lender payloads from disk
+    $ cashlyctl lender upload-dir ./lenders
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from .tui import run as run_tui
 
 # Import the sub‑command groups
 from .commands import borrower as borrower_cmd
+from .commands import lender as lender_cmd
 
 app = typer.Typer(
     name="cashlyctl",
@@ -29,6 +30,7 @@ app = typer.Typer(
 
 # Register groups
 app.add_typer(borrower_cmd.app, name="borrower", help="Create and manage borrowers")
+app.add_typer(lender_cmd.app, name="lender", help="Upload lender JSON payloads")
 
 # --------------------------------------------------------------------------- #
 # Optional: quick health‑check command
