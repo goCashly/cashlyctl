@@ -1,95 +1,90 @@
-# Console-like viewer that renders logs (with Rich markup) and JSON.
 from __future__ import annotations
-
 import json
+from textual.widgets import Static
+from rich.syntax import Syntax
+from rich.text import Text
 
+# Try importing TextArea if available
 try:
-    from textual.widgets import TextLog  # type: ignore[attr-defined]
-    HAVE_TEXTLOG = True
+    from textual.widgets import TextArea
+    HAVE_TEXTAREA = True
 except Exception:
-    HAVE_TEXTLOG = False
+    HAVE_TEXTAREA = False
 
 
-if HAVE_TEXTLOG:
-    # Textual has TextLog: use it with markup + wrapping.
-    class JSONViewer(TextLog):
-        """Center pane that logs messages with markup and can show JSON."""
-        def __init__(self, *args, **kwargs):
-            super().__init__(
-                *args,
-                wrap=True,
-                highlight=True,   # enable ANSI/color
-                markup=True,      # interpret [red]...[/red]
-                **kwargs
-            )
-            self.styles.height = "100%"
-            self.styles.width = "1fr"
-            self.styles.overflow_y = "auto"
+class JSONViewer(Static):
+    """Displays JSON with inline editing support."""
 
-        def write(self, text: str) -> None:  # log line with markup
-            super().write(text)
+    def __init__(self, *args, **kwargs):
+        super().__init__("", *args, **kwargs)
+        self.can_focus = True
+        self.styles.height = "100%"
+        self.styles.width = "1fr"
+        self.styles.overflow_y = "auto"
+        self.styles.overflow_x = "hidden"
+        self.current_path: str | None = None
+        self.editing: bool = False
+        self.editor = None
 
-        def clear(self) -> None:
-            super().clear()
+    # ─── View mode ─────────────────────────────────────────────
+    def display_json(self, text: str):
+        """Render JSON syntax highlighted view."""
+        try:
+            data = json.loads(text)
+            pretty = json.dumps(data, indent=2, ensure_ascii=False)
+            syntax = Syntax(pretty, "json", word_wrap=True, theme="ansi_dark")
+            self.update(syntax)
+        except Exception:
+            self.update(Text.from_markup(f"[red]Invalid JSON[/red]"))
+        self.editing = False
 
-        # Optional helper you can call later
-        def write_json(self, obj_or_str) -> None:
-            try:
-                if isinstance(obj_or_str, str):
-                    data = json.loads(obj_or_str)
-                else:
-                    data = obj_or_str
-                pretty = json.dumps(data, indent=2, ensure_ascii=False)
-                # TextLog doesn't do JSON syntax coloring; still readable & wrapped
-                self.write(pretty)
-            except Exception:
-                # Fallback to raw text if not valid JSON
-                self.write(str(obj_or_str))
+    def write(self, text: str):
+        self.display_json(text)
 
-else:
-    # Fallback: Static + Rich rendering with proper markup and JSON syntax
-    from textual.widgets import Static
-    from rich.text import Text
-    from rich.syntax import Syntax
+    def clear(self):
+        self.update("")
 
-    class JSONViewer(Static):
-        """Center pane with markup text and JSON syntax highlighting."""
-        def __init__(self, *args, **kwargs):
-            super().__init__("", *args, **kwargs)
-            self.can_focus = True
-            self.styles.height = "100%"
-            self.styles.width = "1fr"
-            self.styles.overflow_y = "auto"
-            self.styles.overflow_x = "hidden"
+    # ─── Edit mode ─────────────────────────────────────────────
+    async def enter_edit_mode(self, text: str):
+        """Switch to edit mode."""
+        if self.editing:
+            return
 
-        def _render_markup(self, text: str):
-            self.update(Text.from_markup(text))
+        self.editing = True
+        self.update(Text.from_markup("[yellow][EDIT MODE][/yellow]\n"))
 
-        def _render_json(self, text: str):
-            self.update(Syntax(text, "json", word_wrap=True, line_numbers=False, theme="ansi_dark"))
+        if HAVE_TEXTAREA:
+            self.editor = TextArea()
+            self.editor.load_text(text)
+        else:
+            from textual.widgets import Input
+            self.editor = Input(value=text)
 
-        def write(self, text: str) -> None:
-            """
-            If 'text' is valid JSON -> pretty, highlighted JSON.
-            Else -> treat as Rich markup (so [red]..[/red] renders as color).
-            """
-            try:
-                data = json.loads(text)
-                pretty = json.dumps(data, indent=2, ensure_ascii=False)
-                self._render_json(pretty)
-            except Exception:
-                self._render_markup(text)
+        # synchronous mount
+        self.mount(self.editor)
 
-        def write_json(self, obj_or_str) -> None:
-            try:
-                if isinstance(obj_or_str, str):
-                    data = json.loads(obj_or_str)
-                else:
-                    data = obj_or_str
-                pretty = json.dumps(data, indent=2, ensure_ascii=False)
-                self._render_json(pretty)
-            except Exception:
-                self._render_markup(str(obj_or_str))
+        # ensure app focus if available
+        try:
+            self.app.set_focus(self.editor)
+        except Exception:
+            pass
 
-        def clear(self) -> None:
-            self.update("")
+    async def exit_edit_mode(self):
+        """Exit edit mode and return the current text."""
+        if not self.editing or not self.editor:
+            return ""
+
+        if HAVE_TEXTAREA:
+            content = self.editor.text
+        else:
+            content = getattr(self.editor, "value", "")
+
+        # remove editor safely
+        try:
+            self.editor.remove()
+        except Exception:
+            pass
+
+        self.editor = None
+        self.editing = False
+        return content
