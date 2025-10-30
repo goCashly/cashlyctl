@@ -1,12 +1,22 @@
 import asyncio
 import os
-import httpx
 from datetime import datetime
-from dotenv import load_dotenv
-from textual.widgets import Static
-from rich.text import Text
-from rich.panel import Panel
+
+try:  # pragma: no cover - optional dependency
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - tests run without python-dotenv
+    def load_dotenv(*args, **kwargs):  # type: ignore[misc]
+        return None
+
 from rich import box
+from rich.panel import Panel
+from rich.text import Text
+from textual.widgets import Static
+
+try:  # pragma: no cover - optional dependency
+    import httpx  # type: ignore
+except Exception:  # pragma: no cover - tests run without httpx
+    httpx = None
 
 load_dotenv()
 
@@ -32,6 +42,13 @@ class NetworkPanel(Static):
     async def check_status(self):
         """Ping the Cashly API using POST and X-API-KEY header."""
         start = datetime.now()
+        if httpx is None:
+            self.status_ok = False
+            self.status_text = "httpx unavailable"
+            self.latency_ms = None
+            self.last_check = datetime.now().strftime("%H:%M:%S")
+            self.refresh()
+            return
         try:
             headers = {"X-API-KEY": self.api_key} if self.api_key else {}
             async with httpx.AsyncClient(timeout=3) as client:

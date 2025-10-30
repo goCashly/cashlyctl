@@ -1,7 +1,46 @@
 from pathlib import Path
-import json, aiofiles, os, asyncio
-from dotenv import load_dotenv
-import httpx
+import json
+import os
+import asyncio
+try:  # pragma: no cover - optional dependency
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    def load_dotenv(*args, **kwargs):  # type: ignore[misc]
+        return None
+
+try:  # pragma: no cover - optional dependency
+    import aiofiles
+except Exception:  # pragma: no cover
+    class _AsyncFile:
+        def __init__(self, path, mode, encoding=None):
+            self.path = path
+            self.mode = mode
+            self.encoding = encoding
+            self._file = None
+
+        async def __aenter__(self):
+            self._file = open(self.path, self.mode, encoding=self.encoding)
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            if self._file:
+                await asyncio.to_thread(self._file.close)
+
+        async def read(self):
+            return await asyncio.to_thread(self._file.read)
+
+        async def write(self, data):
+            return await asyncio.to_thread(self._file.write, data)
+
+    class aiofiles:  # type: ignore[override]
+        @staticmethod
+        def open(path, mode="r", encoding=None):
+            return _AsyncFile(path, mode, encoding)
+
+try:  # pragma: no cover - optional dependency
+    import httpx
+except Exception:  # pragma: no cover
+    httpx = None
 
 from ..widgets.jsonviewer import JSONViewer
 from ..widgets.filetree import FileTreePanel
@@ -123,6 +162,10 @@ async def command_submit(app, args):
     """Submit a JSON file to the Cashly API."""
     viewer = app.query_one("#viewer", JSONViewer)
     network_panel = app.query_one("#network", NetworkPanel)
+
+    if httpx is None:
+        CommandRouter.sublog(app, "[red]httpx is not available; cannot submit.[/red]")
+        return
 
     # Determine which file to submit
     if args:
