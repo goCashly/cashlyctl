@@ -1,2 +1,4 @@
 .venv
-cashlyctl.egg-info/*
+cashlyctl.egg-info/
+FILES/*
+!FILES/.gitkeep
