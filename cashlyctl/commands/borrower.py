@@ -4,6 +4,10 @@ Borrower‑related CLI commands.
 
 Currently supports: `borrower create`
 Deletion will be wired once an API endpoint exists.
+
+The helper relies on :func:`cashlyctl.config.make_session`, which now loads
+credentials from `.env`/environment variables and attaches `X-API-KEY`
+automatically when ``CASHLY_API_KEY`` is present.
 """
 
 from __future__ import annotations

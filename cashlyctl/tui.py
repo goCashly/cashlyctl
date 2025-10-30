@@ -1,23 +1,6 @@
-"""
-textual‑based interactive shell for CashlyCTL
-Compatible with:
-  • Textual ~=0.58  (API: Log widget, no markup kwarg)
-  • Typer  >=0.12   (new public API, no .main attribute)
-  • Click  >=8.1
-
-Launch behaviour
-----------------
-Running `cashlyctl` *without* a sub‑command starts this TUI (handled in
-cli.py).  All Typer/Click commands registered in `cashlyctl.cli.app`
-can be executed in the bottom prompt.  Command history is persisted to
-`~/.cashlyctl_history`.
-"""
-
 from __future__ import annotations
 
-import io
 import shlex
-from contextlib import redirect_stdout
 from pathlib import Path
 from typing import List, Optional
 
@@ -29,15 +12,13 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import (
     DataTable,
-    DirectoryTree,
     Input,
     Log as TextLog,
     Static,
+    Tree,
 )
 
-# --------------------------------------------------------------------------- #
-# Import Typer root app (late import to avoid circular refs)                  #
-# --------------------------------------------------------------------------- #
+from .widgets.keyhelp import KeyHelp
 from . import cli as cashly_cli  # noqa: E402
 
 # --------------------------------------------------------------------------- #
@@ -45,7 +26,7 @@ from . import cli as cashly_cli  # noqa: E402
 # --------------------------------------------------------------------------- #
 HISTORY_FILE = Path.home() / ".cashlyctl_history"
 MAX_HISTORY = 100
-FILES_ROOT = Path.cwd() / "FILES"
+FILES_ROOT = Path(__file__).resolve().parent / "FILES"
 UPLOAD_COMMAND_TEMPLATE = "lender upload-file {path}"
 
 
@@ -58,24 +39,21 @@ def _load_history() -> List[str]:
 def _save_history(history: List[str]) -> None:
     HISTORY_FILE.write_text("\n".join(history[-MAX_HISTORY:]), encoding="utf-8")
 
+
 # --------------------------------------------------------------------------- #
 # Widgets                                                                     #
 # --------------------------------------------------------------------------- #
-
-
 class HelpPane(Static):
-    """Displays ASCII logo, available commands, and recent job list."""
-
     history: reactive[List[str]] = reactive([], layout=True)
 
     def __init__(self, **kw):
         super().__init__("", markup=False, **kw)
         self._logo = Figlet(font="slant").renderText("CASHLY TECH SERVICES")
 
-    def on_mount(self) -> None:  # noqa: D401
+    def on_mount(self) -> None:
         self.update(self._render([]))
 
-    def watch_history(self, history: List[str]) -> None:  # noqa: D401
+    def watch_history(self, history: List[str]) -> None:
         self.update(self._render(history))
 
     def _render(self, history: List[str]) -> str:
@@ -102,8 +80,6 @@ class HelpPane(Static):
 
 
 class ResultsPane(TextLog):
-    """Scrollable pane for command results and errors."""
-
     def clear_and_write(self, header: str, body: str) -> None:
         self.clear()
         self.write(header)
@@ -111,8 +87,6 @@ class ResultsPane(TextLog):
 
 
 class CommandBar(Input):
-    """Bottom prompt with ↑/↓ history navigation."""
-
     BINDINGS = [
         ("up", "history_prev", "Prev"),
         ("down", "history_next", "Next"),
@@ -130,19 +104,77 @@ class CommandBar(Input):
 
 
 # --------------------------------------------------------------------------- #
+# Modern File Tree for Textual 6.x                                            #
+# --------------------------------------------------------------------------- #
+class FileTree(Tree[Path]):
+    """Recursive filesystem tree for Textual 6.x."""
+
+    def __init__(self, root: Path, **kwargs):
+        # Don't populate in __init__, wait for mount
+        super().__init__(label=f"📂 {root.name}", data=root, id="files-tree", **kwargs)
+        self.show_root = True
+        self.guide_depth = 4
+        self._root_path = root
+
+    def on_mount(self) -> None:
+        """Load directory structure when widget is mounted."""
+        # Ensure directory exists
+        self._root_path.mkdir(exist_ok=True, parents=True)
+        
+        # Populate the tree
+        self._load_contents()
+
+    def _load_contents(self) -> None:
+        """Load all contents into the tree."""
+        # Clear existing
+        self.root.remove_children()
+        
+        # Add contents
+        self._populate_node(self.root, self._root_path)
+        
+        # Expand root
+        self.root.expand()
+
+    def _populate_node(self, tree_node, path: Path) -> None:
+        """Recursively populate a tree node."""
+        if not path.exists() or not path.is_dir():
+            return
+        
+        try:
+            items = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except (PermissionError, OSError):
+            return
+        
+        for item in items:
+            # Skip hidden files
+            if item.name.startswith('.'):
+                continue
+            
+            if item.is_dir():
+                # Add directory
+                node = tree_node.add(f"📁 {item.name}", data=item, allow_expand=True)
+                # Recursively populate
+                self._populate_node(node, item)
+            else:
+                # Add file
+                tree_node.add_leaf(f"📄 {item.name}", data=item)
+
+
+# --------------------------------------------------------------------------- #
 # Main Application                                                            #
 # --------------------------------------------------------------------------- #
-
-
 class CashlyTUI(App):
     TITLE = "CashlyCTL"
     BINDINGS = [
+        ("tab", "cycle_focus", "Next"),
+        ("shift+tab", "cycle_focus_back", "Prev"),
+        ("ctrl+f", "focus_files", "Files"),
+        ("ctrl+r", "focus_results", "Results"),
+        ("ctrl+p", "focus_prompt", "Prompt"),
+        ("u", "upload_selected", "Upload"),
         ("ctrl+l", "clear_results", "Clear"),
         ("f1", "toggle_help", "Help"),
         ("q", "quit", "Quit"),
-        ("ctrl+f", "focus_files", "Files"),
-        ("ctrl+p", "focus_prompt", "Prompt"),
-        ("u", "upload_selected", "Upload"),
     ]
 
     CSS = """
@@ -151,26 +183,38 @@ class CashlyTUI(App):
         border-bottom: solid gray;
         padding: 1 2;
     }
+
     #main {
         height: 60%;
     }
-    DirectoryTree {
-        width: 35%;
+
+    Tree {
+        width: 30%;
         min-width: 28;
         border-right: solid gray;
     }
+
     #content {
-        width: 65%;
     }
+
+    .right-pane {
+        width: 25%;
+        min-width: 20;
+        border-left: solid gray;
+        padding: 1 2;
+    }
+
     ResultsPane {
         height: 70%;
         padding: 1 2;
     }
+
     DataTable {
         height: 30%;
         border-top: solid gray;
         padding: 0 1 1 1;
     }
+
     CommandBar {
         border-top: solid gray;
     }
@@ -180,40 +224,66 @@ class CashlyTUI(App):
     _history_index: int | None
     _highlighted_path: Optional[Path]
 
-    # -------------------------------------------------------------- compose
-    def compose(self) -> ComposeResult:  # noqa: D401
-        FILES_ROOT.mkdir(exist_ok=True)
+    # ----------------------------------------------------------- actions
+    def action_cycle_focus(self) -> None:
+        self.focus_next()
+
+    def action_cycle_focus_back(self) -> None:
+        self.focus_previous()
+
+    def action_focus_results(self) -> None:
+        self.results.focus()
+
+    # ----------------------------------------------------------- compose
+    def compose(self) -> ComposeResult:
+        # Create FILES directory if it doesn't exist
+        FILES_ROOT.mkdir(exist_ok=True, parents=True)
+        
+        # Add some debug info
+        self.log(f"FILES_ROOT: {FILES_ROOT}")
+        self.log(f"EXISTS: {FILES_ROOT.exists()}")
+        if FILES_ROOT.exists():
+            self.log(f"CONTENTS: {list(FILES_ROOT.iterdir())}")
+        
         yield Vertical(
             HelpPane(id="help"),
             Horizontal(
-                DirectoryTree(FILES_ROOT, id="files-tree", show_root=True, root_label="FILES"),
+                FileTree(FILES_ROOT),
                 Vertical(
                     ResultsPane(id="results"),
                     DataTable(id="file-table"),
                     id="content",
                 ),
+                KeyHelp(id="key-help", classes="right-pane"),
                 id="main",
             ),
             CommandBar(placeholder="> enter command …", id="cmd"),
         )
 
-    # -------------------------------------------------------------- mount
-    def on_mount(self) -> None:  # noqa: D401
+    # ----------------------------------------------------------- mount
+    async def on_mount(self) -> None:
         self.help_pane: HelpPane = self.query_one("#help")
         self.results: ResultsPane = self.query_one("#results")
         self.cmd: CommandBar = self.query_one("#cmd")
-        self.files_tree: DirectoryTree = self.query_one("#files-tree")
+        self.files_tree: FileTree = self.query_one("#files-tree")
         self.file_table: DataTable = self.query_one("#file-table")
+        self.key_help: KeyHelp = self.query_one("#key-help")
 
         self._history = _load_history()
         self._history_index = None
         self._highlighted_path = None
         self.help_pane.history = self._history
         self._setup_file_table()
+
+        self.set_interval(0.1, self._update_keyhelp)
         self.cmd.focus()
 
-    # -------------------------------------------------------- key handling
-    async def on_key(self, event: events.Key) -> None:  # noqa: D401
+    def _update_keyhelp(self) -> None:
+        focused = self.focused
+        self.key_help.update_for(focused.id if focused else None)
+
+    # ----------------------------------------------------------- key handling
+    async def on_key(self, event: events.Key) -> None:
         if not self.cmd.has_focus or event.key not in {"up", "down"}:
             return
         if not self._history:
@@ -230,27 +300,20 @@ class CashlyTUI(App):
         self.cmd.value = self._history[self._history_index]
         self.cmd.cursor_position = len(self.cmd.value)
 
-    # --------------------------------------------- input submitted event
-    async def on_input_submitted(self, event: Input.Submitted) -> None:  # noqa: D401
+    # ----------------------------------------------------------- command handling
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
         cmd = event.value.strip()
         if not cmd:
             return
-
-        self.cmd.value = ""  # clear prompt
+        self.cmd.value = ""
         await self._execute_command(cmd)
 
-    # ------------------------------------------------ command processing
     async def _process_command(self, cmd_str: str) -> None:
-        """Execute a Typer command through Click's test runner and render output."""
-
-        # Map bare 'help' → global help flag
         if cmd_str == "help":
             cmd_str = "--help"
 
         args = shlex.split(cmd_str)
-
-        # Typer 0.12 no longer exposes .main; get the underlying Click command
-        from typer.main import get_command  # lazy import to avoid cycles
+        from typer.main import get_command
         click_cmd = get_command(cashly_cli.app)
 
         runner = CliRunner()
@@ -259,7 +322,7 @@ class CashlyTUI(App):
             args,
             prog_name="cashlyctl",
             standalone_mode=False,
-            catch_exceptions=True,  # capture UsageError instead of crashing
+            catch_exceptions=True,
         )
 
         header = f"> {cmd_str}"
@@ -271,6 +334,10 @@ class CashlyTUI(App):
         self.results.clear_and_write(header, body)
 
     async def _execute_command(self, cmd: str, *, record_history: bool = True) -> None:
+        if cmd in {"files", "results", "prompt", "help", "quit"}:
+            await self._handle_ui_command(cmd)
+            return
+
         if record_history:
             self._history.append(cmd)
             self._history = self._history[-MAX_HISTORY:]
@@ -280,48 +347,50 @@ class CashlyTUI(App):
 
         await self._process_command(cmd)
 
-    # ------------------------------------------------ app actions
-    def action_clear_results(self) -> None:  # noqa: D401
+    async def _handle_ui_command(self, cmd: str):
+        match cmd:
+            case "files":
+                self.files_tree.focus()
+            case "results":
+                self.results.focus()
+            case "prompt":
+                self.cmd.focus()
+            case "help":
+                self.action_toggle_help()
+            case "quit":
+                self.exit()
+
+    # ----------------------------------------------------------- app actions
+    def action_clear_results(self) -> None:
         self.results.clear()
 
-    def action_toggle_help(self) -> None:  # noqa: D401
+    def action_toggle_help(self) -> None:
         self.help_pane.display = not self.help_pane.display
 
-    def action_quit(self) -> None:  # noqa: D401
+    def action_quit(self) -> None:
         self.exit()
 
-    def action_focus_files(self) -> None:  # noqa: D401
+    def action_focus_files(self) -> None:
         self.files_tree.focus()
 
-    def action_focus_prompt(self) -> None:  # noqa: D401
+    def action_focus_prompt(self) -> None:
         self.cmd.focus()
 
-    async def action_upload_selected(self) -> None:  # noqa: D401
+    async def action_upload_selected(self) -> None:
         if not self._highlighted_path or not self._highlighted_path.is_file():
             self.bell()
             return
-
         cmd = UPLOAD_COMMAND_TEMPLATE.format(path=shlex.quote(str(self._highlighted_path)))
-        await self._execute_command(cmd)
+        await self._execute_command(cmd, record_history=False)
 
-    # ------------------------------------------------ directory events
-    def on_directory_tree_node_highlighted(
-        self, event: DirectoryTree.NodeHighlighted
-    ) -> None:  # noqa: D401
-        self._set_highlighted_path(event.path)
+    # ----------------------------------------------------------- new tree events
+    def on_tree_node_selected(self, event: Tree.NodeSelected[Path]) -> None:
+        path = event.node.data
+        self._set_highlighted_path(path)
+        if path.is_file():
+            self.bell()  # placeholder for upload trigger
 
-    def on_directory_tree_directory_selected(
-        self, event: DirectoryTree.DirectorySelected
-    ) -> None:  # noqa: D401
-        self._set_highlighted_path(event.path)
-
-    async def on_directory_tree_file_selected(
-        self, event: DirectoryTree.FileSelected
-    ) -> None:  # noqa: D401
-        self._set_highlighted_path(event.path)
-        await self.action_upload_selected()
-
-    # ------------------------------------------------ helpers
+    # ----------------------------------------------------------- helpers
     def _setup_file_table(self) -> None:
         if not self.file_table.columns:
             self.file_table.add_columns("Key", "Action")
@@ -354,9 +423,7 @@ class CashlyTUI(App):
         try:
             relative = path.relative_to(FILES_ROOT)
             text = relative.as_posix()
-            if text in {".", ""}:
-                return "FILES"
-            return text
+            return text or "FILES"
         except ValueError:
             return str(path)
 
@@ -364,10 +431,9 @@ class CashlyTUI(App):
 # --------------------------------------------------------------------------- #
 # Entrypoint                                                                  #
 # --------------------------------------------------------------------------- #
-
-def run() -> None:  # pragma: no cover
+def run() -> None:
     CashlyTUI().run()
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     run()
