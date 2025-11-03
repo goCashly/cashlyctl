@@ -3,12 +3,12 @@ from textual.reactive import reactive
 from textual import events
 from rich.console import RenderableType
 from rich.panel import Panel
-from rich.table import Table
 import httpx
 import asyncio
 import os
 from dotenv import load_dotenv
 import json
+from typing import Dict, Iterable, List, Tuple
 
 load_dotenv()
 
@@ -53,7 +53,7 @@ class SchemaPanel(Widget):
         except Exception as e:
             self.content = f"[red]Schema unavailable:[/red] {e}"
 
-    def _extract_result(self, data: dict):
+    def _extract_result(self, data: dict) -> Tuple[List[dict], List[dict]]:
         """Safely unwrap the deeply nested response."""
         try:
             inner = (
@@ -68,31 +68,76 @@ class SchemaPanel(Widget):
         except Exception:
             return [], []
 
-    def _format_schema(self, data: dict) -> RenderableType:
-        """Convert query result JSON to a Rich table."""
+    def _node_style_palette(self) -> Iterable[str]:
+        """Colors used to represent nodes in the ASCII map."""
+        return (
+            "#1f77b4",
+            "#9467bd",
+            "#2ca02c",
+            "#ff7f0e",
+            "#17becf",
+            "#d62728",
+        )
+
+    def _format_schema(self, data: dict) -> str:
+        """Convert query result JSON to a Bloom-like ASCII map."""
         nodes, rels = self._extract_result(data)
 
         if not nodes:
             return "[yellow]No schema data returned (empty nodes list)[/yellow]"
 
-        node_map = {n.get("id"): n for n in nodes}
+        node_map: Dict[str, dict] = {str(n.get("id")): n for n in nodes}
+        node_index = {str(n.get("id")): idx for idx, n in enumerate(nodes)}
+        palette = list(self._node_style_palette()) or ["#1f77b4"]
 
-        table = Table(show_header=True, header_style="bold magenta", expand=True)
-        table.add_column("Node")
-        table.add_column("Outgoing Relations")
+        def node_label(node: dict) -> str:
+            labels = node.get("labels") or []
+            if isinstance(labels, list) and labels:
+                return str(labels[0])
+            if "name" in node:
+                return str(node["name"])
+            return str(node.get("id", "?"))
 
-        for node in nodes:
-            label = node.get("name") or node.get("labels", ["?"])[0]
-            outgoing = []
-            for rel in rels:
-                if rel.get("startNode") == node.get("id"):
-                    end_node = node_map.get(rel.get("endNode"))
-                    end_label = end_node.get("labels", ["?"])[0] if end_node else "?"
+        def node_token(node: dict) -> str:
+            idx = node_index.get(str(node.get("id")), 0)
+            color = palette[idx % len(palette)]
+            label = node_label(node)
+            return f"[bold white on {color}] {label} [/bold white on {color}]"
+
+        adjacency: Dict[str, List[dict]] = {str(n.get("id")): [] for n in nodes}
+        for rel in rels:
+            start_node = str(rel.get("startNode"))
+            adjacency.setdefault(start_node, []).append(rel)
+
+        lines: List[str] = []
+
+        for idx, node in enumerate(nodes):
+            node_id = str(node.get("id"))
+            lines.append(node_token(node))
+            outgoing = adjacency.get(node_id, [])
+
+            if outgoing:
+                for rel_idx, rel in enumerate(outgoing):
+                    branch = "├──" if rel_idx < len(outgoing) - 1 else "└──"
                     rel_type = rel.get("type", "?")
-                    outgoing.append(f"[cyan]{rel_type}[/cyan] → {end_label}")
-            table.add_row(f"[bold]{label}[/bold]", "\n".join(outgoing) or "—")
+                    end_node = node_map.get(str(rel.get("endNode")))
+                    if end_node:
+                        target_repr = node_token(end_node)
+                    else:
+                        target_label = str(rel.get("endNode", "?"))
+                        target_repr = f"[bold white on #555555] {target_label} [/bold white on #555555]"
+                    lines.append(
+                        "    "
+                        + f"[dim]{branch}[/dim] [cyan]{rel_type}[/cyan] ▶ "
+                        + target_repr
+                    )
+            else:
+                lines.append("    [dim]└──[/dim] [grey62]No outgoing relationships[/grey62]")
 
-        return table
+            if idx < len(nodes) - 1:
+                lines.append("")
+
+        return "\n".join(lines).rstrip()
 
     def render(self) -> RenderableType:
         return Panel(
