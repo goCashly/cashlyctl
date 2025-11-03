@@ -6,6 +6,11 @@ from rich.panel import Panel
 from rich.table import Table
 import httpx
 import asyncio
+import os
+from dotenv import load_dotenv
+import json
+
+load_dotenv()
 
 
 class SchemaPanel(Widget):
@@ -14,53 +19,88 @@ class SchemaPanel(Widget):
     content: reactive[str] = reactive("[grey62]Loading schema...[/grey62]")
 
     async def on_mount(self) -> None:
-        # fetch once after a short delay so the UI draws first
         await asyncio.sleep(0.3)
         await self.refresh_schema()
 
     async def refresh_schema(self) -> None:
         """Run CALL db.schema.visualization() and format it."""
         cypher = "CALL db.schema.visualization()"
+        api_key = os.getenv("CASHLY_API_KEY")
+
+        if not api_key:
+            self.content = "[red]Missing CASHLY_API_KEY in .env[/red]"
+            return
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-KEY": api_key,
+        }
+
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    "http://ec2-18-191-189-128.us-east-2.compute.amazonaws.com:8000/v1/graph-query",
+                    "https://crm-api.gocashly.io/v1/graph-query",
                     json={"query": cypher},
+                    headers=headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
+
+            # print to terminal for inspection
+            print("\n🔍 Raw graph-query payload:\n", json.dumps(data, indent=2)[:1200])
+
             self.content = self._format_schema(data)
         except Exception as e:
             self.content = f"[red]Schema unavailable:[/red] {e}"
 
+    def _extract_result(self, data: dict):
+        """Safely unwrap the deeply nested response."""
+        try:
+            inner = (
+                data.get("response", {})
+                .get("response", [{}])[0]
+                .get("results", {})
+                .get("results", [{}])[0]
+            )
+            nodes = inner.get("nodes", [])
+            rels = inner.get("relationships", [])
+            return nodes, rels
+        except Exception:
+            return [], []
+
     def _format_schema(self, data: dict) -> RenderableType:
         """Convert query result JSON to a Rich table."""
-        result = data.get("result") or data.get("data") or data
-        if not result:
-            return "[yellow]No schema data returned[/yellow]"
+        nodes, rels = self._extract_result(data)
 
-        nodes = result.get("nodes", [])
-        rels = result.get("relationships", [])
+        if not nodes:
+            return "[yellow]No schema data returned (empty nodes list)[/yellow]"
+
+        node_map = {n.get("id"): n for n in nodes}
 
         table = Table(show_header=True, header_style="bold magenta", expand=True)
         table.add_column("Node")
         table.add_column("Outgoing Relations")
 
         for node in nodes:
-            name = node.get("name") or node.get("labels", ["?"])[0]
-            out = [
-                f"[cyan]{r['type']}[/cyan] → {r['endNode']}"
-                for r in rels
-                if r.get("startNode") == name
-            ]
-            table.add_row(f"[bold]{name}[/bold]", "\n".join(out) or "—")
+            label = node.get("name") or node.get("labels", ["?"])[0]
+            outgoing = []
+            for rel in rels:
+                if rel.get("startNode") == node.get("id"):
+                    end_node = node_map.get(rel.get("endNode"))
+                    end_label = end_node.get("labels", ["?"])[0] if end_node else "?"
+                    rel_type = rel.get("type", "?")
+                    outgoing.append(f"[cyan]{rel_type}[/cyan] → {end_label}")
+            table.add_row(f"[bold]{label}[/bold]", "\n".join(outgoing) or "—")
 
         return table
 
     def render(self) -> RenderableType:
-        return Panel(self.content, title="[bold]Graph Schema[/bold]", border_style="magenta")
+        return Panel(
+            self.content,
+            title="[bold magenta]Graph Schema[/bold magenta] [grey50](R to refresh)[/grey50]",
+            border_style="magenta",
+        )
 
     async def on_key(self, event: events.Key) -> None:
-        """Press R to refresh schema."""
         if event.key.lower() == "r":
             await self.refresh_schema()
