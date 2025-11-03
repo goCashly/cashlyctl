@@ -11,6 +11,7 @@ from .widgets.jsonviewer import JSONViewer
 from .widgets.logview import LogView
 from .widgets.networkpanel import NetworkPanel
 from .widgets.selectedfiles import SelectedFilesView
+from .widgets.schemapanel import SchemaPanel
 from .controllers import build_router
 
 
@@ -30,8 +31,15 @@ class CashlyCTL(App):
             yield FileTreePanel(id="files")
             yield JSONViewer(id="viewer")
             with Vertical(id="right"):
-                yield NetworkPanel("https://crm-api.gocashly.io/v1/submit", id="network")
+                # top row: schema map + compact network status
+                with Horizontal(id="top-right"):
+                    yield SchemaPanel(id="schema")
+                    yield NetworkPanel("https://crm-api.gocashly.io/v1/submit", id="network")
+
+                # middle: selected files
                 yield SelectedFilesView(id="selected-files")
+
+                # bottom: logs
                 yield LogView(id="log")
 
     def update_selected_files(self, paths: Iterable[Path]) -> None:

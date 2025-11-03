@@ -1,40 +1,34 @@
-Screen {
-    layout: vertical;
-    background: #001b1b;
-    color: #93a1a1;
-}
-
-#header {
-    height: 3;
-    background: #002b36;
-    color: #93a1a1;
-}
-
-#body {
-    layout: horizontal;
-}
-
-#files {
-    width: 30%;
-    border: solid #586e75;
-}
-
-#viewer {
-    width: 45%;
-    border: solid #586e75;
-}
-
 #right {
     width: 25%;
     layout: vertical;
 }
 
-#commands {
-    height: 40%;
+/* top-right row containing schema + network */
+#top-right {
+    layout: horizontal;
+    height: 12;                 /* controls height of the schema + network section */
+}
+
+/* the schema map area */
+#schema {
+    width: 70%;
     border: solid #586e75;
 }
 
-#log {
-    height: 60%;
+/* smaller network status box */
+#network {
+    width: 30%;
     border: solid #586e75;
+}
+
+/* selected files section */
+#selected-files {
+    height: 6;
+    border: solid #586e75;
+}
+
+/* log area fills the rest of the column */
+#log {
+    border: solid #586e75;
+    height: 1fr;                /* take remaining vertical space */
 }

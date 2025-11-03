@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex70-onab-1",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 70 First Mortgage (ON/AB)",
   "minCredit": 600,
   "maxCredit": 900,
   "minLTV": 66,
@@ -14,5 +15,6 @@
   "province": ["Ontario", "Alberta"],
   "propertyType": ["Freehold", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "70 % LTV cap for ON/AB with rate premium for loans > 1.5 M; 24-month term open after 12; quick underwriting program."
 }

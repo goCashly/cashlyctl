@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex70-bc-1",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 70 First Mortgage (BC)",
   "minCredit": 600,
   "maxCredit": 900,
   "minLTV": 66,
@@ -14,5 +15,6 @@
   "province": ["British Columbia"],
   "propertyType": ["Freehold", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "70 % LTV cap; pricing range ≈ 7.99 – 8.49 %; allows rental or owner-occupied; normal doc requirements (3 months bank statements, NOA, LOE)."
 }

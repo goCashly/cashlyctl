@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex70-abbcon-2",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 75 Second Mortgage (AB/BC/ON)",
   "minCredit": 550,
   "maxCredit": 900,
   "minLTV": 1,
@@ -14,5 +15,6 @@
   "province": ["Alberta", "Ontario", "British Columbia"],
   "propertyType": ["Freehold", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "75 % LTV max (second position); premium tier for strong equity borrowers with moderate credit; standard commitment fee applies."
 }

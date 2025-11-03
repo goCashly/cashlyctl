@@ -11,6 +11,8 @@ venv/
 .env/
 .venv/
 
+FILES/
+
 # OS files
 .DS_Store
 Thumbs.db

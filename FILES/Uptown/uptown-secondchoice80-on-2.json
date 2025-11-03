@@ -1,0 +1,31 @@
+{
+  "IDLenderProduct": "uptown-secondchoice80-on-2",
+  "IDLender": "uptown",
+  "lenderName": "Uptown Financial",
+  "minCredit": 640,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 80,
+  "loan_position": "Second",
+  "rate": 11.99,
+  "fee": 3.49,
+  "status": "Active",
+  "term": 12,
+  "province": [
+    "Ontario"
+  ],
+  "propertyType": [
+    "Single Family",
+    "Townhouse",
+    "Duplex",
+    "Apartment Condo"
+  ],
+  "dealType": [
+    "purchase",
+    "refinance"
+  ],
+  "loanType": [
+    "mortgage"
+  ],
+  "notes": "Second Choice 80 \u2013 2nd mortgage up to 80% LTV. 1-year term. Min 640 Beacon. Verifiable income required, max 70% TDS, owner-occupied only. Max loan $300,000."
+}

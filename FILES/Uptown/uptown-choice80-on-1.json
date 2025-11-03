@@ -1,0 +1,30 @@
+{
+  "IDLenderProduct": "uptown-choice80-on-1",
+  "IDLender": "uptown",
+  "lenderName": "Uptown Financial",
+  "minCredit": 640,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 80,
+  "loan_position": "First",
+  "rate": 6.99,
+  "fee": 2.49,
+  "status": "Active",
+  "term": 24,
+  "province": [
+    "Ontario"
+  ],
+  "propertyType": [
+    "Single Family",
+    "Duplex",
+    "Townhouse"
+  ],
+  "dealType": [
+    "purchase",
+    "refinance"
+  ],
+  "loanType": [
+    "mortgage"
+  ],
+  "notes": "Choice 80 Bundle Solution for owner-occupied and rental properties up to 80% LTV. Min Beacon 640. Max TDS 70%. Max loan $1.2M. 2-year term, open after 12 months. Add 50 bps to rate for rental properties."
+}

@@ -1,0 +1,33 @@
+{
+  "IDLenderProduct": "uptown-firstchoice70-on-1",
+  "IDLender": "uptown",
+  "lenderName": "Uptown Financial",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 70,
+  "loan_position": "First",
+  "rate": 7.49,
+  "fee": 2.49,
+  "status": "Active",
+  "term": 24,
+  "province": [
+    "Ontario"
+  ],
+  "propertyType": [
+    "Single Family",
+    "Duplex",
+    "Fourplex",
+    "Townhouse",
+    "Strata Townhouse",
+    "Apartment Condo"
+  ],
+  "dealType": [
+    "purchase",
+    "refinance"
+  ],
+  "loanType": [
+    "mortgage"
+  ],
+  "notes": "Choice 70 \u2013 1st mortgage up to 70% LTV. 24-month term, open after 12 months. Owner-occupied only, min 600 Beacon, TDS under 85%. +50bps premium if below criteria. GTA only, max $2M loan amount."
+}

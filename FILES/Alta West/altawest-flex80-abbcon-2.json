@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex80-abbcon-2",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 80 Second Mortgage (AB/BC/ON)",
   "minCredit": 640,
   "maxCredit": 900,
   "minLTV": 1,
@@ -14,5 +15,6 @@
   "province": ["Alberta", "Ontario"],
   "propertyType": ["Freehold", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "80 % LTV special extension product; designed for refinance or debt-consolidation with higher rate and fee load; approval subject to lending committee review."
 }

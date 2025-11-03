@@ -1,0 +1,32 @@
+{
+  "IDLenderProduct": "uptown-firstchoiceexpress65-on-1",
+  "IDLender": "uptown",
+  "lenderName": "Uptown Financial",
+  "minCredit": 600,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 65,
+  "loan_position": "First",
+  "rate": 5.99,
+  "fee": 2.0,
+  "status": "Active",
+  "term": 24,
+  "province": [
+    "Ontario"
+  ],
+  "propertyType": [
+    "Single Family",
+    "Duplex",
+    "Fourplex",
+    "Townhouse",
+    "Condo"
+  ],
+  "dealType": [
+    "purchase",
+    "refinance"
+  ],
+  "loanType": [
+    "mortgage"
+  ],
+  "notes": "Express 65 \u2013 1st mortgage 2-year term. Up to 65% LTV, minimum 600 Beacon. Open after 12 months. Max $1.5M loan amount. Owner-occupied or rental up to 4 units with 1 unit owner-occupied. Available in GTA and major Ontario cities. Requires appraisal and inspection over 65% LTV."
+}

@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex75-bc-1",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 75 First Mortgage (BC)",
   "minCredit": 600,
   "maxCredit": 900,
   "minLTV": 71,
@@ -14,5 +15,6 @@
   "province": ["British Columbia"],
   "propertyType": ["Freehold", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "75 % LTV limit; full suite of property types (single, duplex, townhouse, condo); available across A/B/C areas in BC."
 }

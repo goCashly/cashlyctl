@@ -1,0 +1,33 @@
+{
+  "IDLenderProduct": "uptown-urbanrural70-on-2",
+  "IDLender": "uptown",
+  "lenderName": "Uptown Financial",
+  "minCredit": 550,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 70,
+  "loan_position": "Second",
+  "rate": 9.99,
+  "fee": 2.5,
+  "status": "Active",
+  "term": 12,
+  "province": [
+    "Ontario"
+  ],
+  "propertyType": [
+    "Detached",
+    "Semi-Detached",
+    "Townhouse",
+    "4-Plex",
+    "Waterfront",
+    "Hobby Farm"
+  ],
+  "dealType": [
+    "refinance",
+    "equity_takeout"
+  ],
+  "loanType": [
+    "mortgage"
+  ],
+  "notes": "Urban & Rural 2nd mortgage up to 70% LTV. Rates start at 9.99% with 2.5% fee. $2000 minimum fee applies. 2nd behind collateral charge accepted, including Home Equity Bank up to 60% in major urban areas."
+}

@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex65-bc-2",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 65 Second Mortgage (BC - Alt Tier)",
   "minCredit": 550,
   "maxCredit": 900,
   "minLTV": 1,
@@ -14,5 +15,6 @@
   "province": ["British Columbia"],
   "propertyType": ["Freehold", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "Up to 65 % LTV second-position; same amortization and term structure as first; available to borrowers with 550+ credit and strong equity."
 }

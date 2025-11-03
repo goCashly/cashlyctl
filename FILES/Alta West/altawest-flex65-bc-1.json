@@ -2,6 +2,7 @@
   "IDLenderProduct": "altawest-flex65-bc-1",
   "IDLender": "altawest",
   "lenderName": "Alta West Capital",
+  "productName": "Flex 65 First Mortgage (BC)",
   "minCredit": 600,
   "maxCredit": 900,
   "minLTV": 1,
@@ -14,5 +15,6 @@
   "province": ["British Columbia"],
   "propertyType": ["Detached", "Condo"],
   "dealType": ["purchase", "refinance"],
-  "loanType": ["mortgage"]
+  "loanType": ["mortgage"],
+  "notes": "65 % LTV limit, BC pricing tier (7.99 % rate ≈ Flex 65)."
 }

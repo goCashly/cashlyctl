@@ -1,0 +1,31 @@
+{
+  "IDLenderProduct": "uptown-statedincome75-on-1",
+  "IDLender": "uptown",
+  "lenderName": "Uptown Financial",
+  "minCredit": 550,
+  "maxCredit": 900,
+  "minLTV": 1,
+  "maxLTV": 75,
+  "loan_position": "First",
+  "rate": 7.49,
+  "fee": 1.5,
+  "status": "Active",
+  "term": 12,
+  "province": [
+    "Ontario"
+  ],
+  "propertyType": [
+    "Detached",
+    "Semi-Detached",
+    "Townhouse",
+    "Duplex",
+    "Condo"
+  ],
+  "dealType": [
+    "refinance"
+  ],
+  "loanType": [
+    "mortgage"
+  ],
+  "notes": "Stated Income 75 \u2013 1st mortgage up to 75% LTV. No GDS/TDS requirements. Self-employed or limited doc borrowers. No minimum beacon score. Urban/suburban properties only."
+}
