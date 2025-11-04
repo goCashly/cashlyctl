@@ -55,18 +55,52 @@ class SchemaPanel(Widget):
 
     def _extract_result(self, data: dict) -> Tuple[List[dict], List[dict]]:
         """Safely unwrap the deeply nested response."""
+
+        nodes: List[dict] = []
+        rels: List[dict] = []
+        seen_nodes: set[str] = set()
+        seen_rels: set[str] = set()
+
+        def node_key(node: dict) -> str:
+            if "id" in node:
+                return f"node:{node['id']}"
+            return f"node:{json.dumps(node, sort_keys=True)}"
+
+        def rel_key(rel: dict) -> str:
+            if "id" in rel:
+                return f"rel:{rel['id']}"
+            return "rel:" + json.dumps(rel, sort_keys=True)
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                maybe_nodes = obj.get("nodes")
+                if isinstance(maybe_nodes, list):
+                    for node in maybe_nodes:
+                        key = node_key(node)
+                        if key not in seen_nodes:
+                            seen_nodes.add(key)
+                            nodes.append(node)
+
+                maybe_rels = obj.get("relationships")
+                if isinstance(maybe_rels, list):
+                    for rel in maybe_rels:
+                        key = rel_key(rel)
+                        if key not in seen_rels:
+                            seen_rels.add(key)
+                            rels.append(rel)
+
+                for value in obj.values():
+                    walk(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+
         try:
-            inner = (
-                data.get("response", {})
-                .get("response", [{}])[0]
-                .get("results", {})
-                .get("results", [{}])[0]
-            )
-            nodes = inner.get("nodes", [])
-            rels = inner.get("relationships", [])
-            return nodes, rels
+            walk(data)
         except Exception:
             return [], []
+
+        return nodes, rels
 
     def _node_style_palette(self) -> Iterable[str]:
         """Colors used to represent nodes in the ASCII map."""
