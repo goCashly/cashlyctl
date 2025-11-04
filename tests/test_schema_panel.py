@@ -68,3 +68,58 @@ def test_format_schema_handles_empty_payload():
     panel = SchemaPanel()
     output = panel._format_schema({})
     assert "No schema data" in output
+
+
+def test_extract_result_merges_nested_payloads():
+    panel = SchemaPanel()
+    payload = {
+        "response": {
+            "response": [
+                {
+                    "results": {
+                        "results": [
+                            {
+                                "nodes": [
+                                    {"id": "1", "labels": ["User"]},
+                                ],
+                                "relationships": [],
+                            }
+                        ]
+                    }
+                },
+                {
+                    "results": {
+                        "results": [
+                            {
+                                "data": [
+                                    {
+                                        "graph": {
+                                            "nodes": [
+                                                {"id": "1", "labels": ["User"]},
+                                                {"id": "2", "labels": ["Account"]},
+                                            ],
+                                            "relationships": [
+                                                {
+                                                    "id": "9",
+                                                    "type": "HAS",
+                                                    "startNode": "1",
+                                                    "endNode": "2",
+                                                }
+                                            ],
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+            ]
+        }
+    }
+
+    nodes, rels = panel._extract_result(payload)
+
+    assert {n["id"] for n in nodes} == {"1", "2"}
+    assert len(nodes) == 2
+    assert len(rels) == 1
+    assert rels[0]["type"] == "HAS"

@@ -34,7 +34,13 @@ class CashlyCTL(App):
                 # top row: schema map + compact network status
                 with Horizontal(id="top-right"):
                     yield SchemaPanel(id="schema")
-                    yield NetworkPanel("https://crm-api.gocashly.io/v1/submit", id="network")
+                    yield NetworkPanel(
+                        {
+                            "Submit": "https://crm-api.gocashly.io/v1/submit",
+                            "Graph Query": "https://crm-api.gocashly.io/v1/graph-query",
+                        },
+                        id="network",
+                    )
 
                 # middle: selected files
                 yield SelectedFilesView(id="selected-files")
