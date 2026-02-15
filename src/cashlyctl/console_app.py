@@ -5,6 +5,7 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +25,7 @@ except Exception:
     Figlet = None  # type: ignore[assignment]
 
 from cashlyctl.audit import audit_command
+from cashlyctl.aws_drilldown import AwsInstanceDetail, aws_sdk_available, fetch_instance_detail
 from cashlyctl.auth import load_login_credentials, verify_login
 from cashlyctl.commands import CommandKind, parse_command
 from cashlyctl.config import (
@@ -32,6 +34,16 @@ from cashlyctl.config import (
     ensure_state_layout,
     load_config,
     save_config,
+)
+from cashlyctl.deployments import (
+    DeployReadinessResult,
+    DeployRunResult,
+    DeploySpec,
+    load_deploy_specs,
+    probe_deploy_readiness,
+    probe_deploy_target_readiness,
+    run_deploy_via_ssh,
+    run_rollback_via_ssh,
 )
 from cashlyctl.health import run_mvp_checks
 from cashlyctl.models import DeploymentMode, Environment, HealthCheckResult, Profile
@@ -75,7 +87,7 @@ STATE_PALETTES: dict[AppState, dict[str, str]] = {
 }
 
 
-WRITE_IMPACT_MENU_ITEMS = {"4", "7"}
+WRITE_IMPACT_MENU_ITEMS = {"4", "7", "8"}
 
 
 class CashlyConsoleApp(App[None]):
@@ -174,7 +186,8 @@ class CashlyConsoleApp(App[None]):
         "4": "Jobs / Runs",
         "5": "Architecture",
         "6": "Security / Drift",
-        "7": "Utilities",
+        "7": "Deployments",
+        "8": "Utilities",
     }
 
     def __init__(self) -> None:
@@ -223,6 +236,23 @@ class CashlyConsoleApp(App[None]):
         self.network_probe_tls_warn_days = 14
         self.network_probe_last_refresh_monotonic = 0.0
         self.network_probe_last_refresh_at = "-"
+        self.instance_detail_target = ""
+        self.instance_detail_data: AwsInstanceDetail | None = None
+        self.instance_detail_last_refresh_at = "-"
+        self.instance_detail_cache: dict[str, AwsInstanceDetail] = {}
+        self.aws_sdk_ready = aws_sdk_available()
+        self.deploy_specs: dict[str, DeploySpec] = load_deploy_specs(
+            [target.name for target in self.network_probe_targets]
+        )
+        self.deploy_readiness: dict[str, DeployReadinessResult] = {}
+        self.deploy_readiness_last_refresh_at = "-"
+        self.deploy_readiness_timeout_seconds = _deploy_readiness_timeout_seconds()
+        self.deploy_readiness_loading = False
+        self.deploy_readiness_spinner_frames = ("|", "/", "-", "\\")
+        self.deploy_readiness_spinner_index = 0
+        self.deploy_readiness_seq = 0
+        self.deploy_history: list[dict[str, str]] = []
+        self.last_deploy_report: DeployRunResult | None = None
 
         self.panel1_mode = "STATUS"
         self.tail_target = "neo4j-dev"
@@ -260,6 +290,7 @@ class CashlyConsoleApp(App[None]):
         self._set_command_mode()
         self.query_one("#command_line", Input).focus()
         self.set_interval(1.0, self._on_clock_tick)
+        self.set_interval(0.25, self._on_spinner_tick)
         if self.login_credentials:
             self._set_status("ENTER LOGON TO START AUTH", "ok")
         else:
@@ -296,7 +327,7 @@ class CashlyConsoleApp(App[None]):
         self._record_activity()
         self._set_job_status("SHOWING HELP...")
         self._set_status(
-            "HELP: LOGON, LOGOFF, SET STATE <observe|maint|service>, SERVICE ON, PROCEED <target>, =0..=7, EXIT, REFRESH, PROFILE, SET ENV, TAIL, SAVE QRY",
+            "HELP: LOGON, LOGOFF, SET STATE <observe|maint|service>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY, ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
             "ok",
         )
         self._set_job_status("HELP READY")
@@ -345,13 +376,22 @@ class CashlyConsoleApp(App[None]):
     def action_refresh(self) -> None:
         self._record_activity()
         self._set_job_status("REFRESHING SYSTEM STATUS...")
+        include_status = self.panel in {"1", "I"}
         self._refresh_system_status(
-            force_network=self.panel == "1",
-            include_network=self.panel == "1",
+            force_network=include_status,
+            include_network=include_status,
         )
+        if self.panel == "I" and self.instance_detail_target:
+            self._load_instance_detail(self.instance_detail_target, force=True)
+        deploy_refresh_started = False
+        if self.panel == "7":
+            self._start_deploy_readiness_refresh("REFRESH")
+            deploy_refresh_started = True
         self.login_credentials = load_login_credentials()
         self.host_ip_label, self.host_ip = _detect_banner_ip()
         self._render()
+        if deploy_refresh_started:
+            return
         self._set_job_status("REFRESH COMPLETE")
         self._set_status(f"REFRESHED {datetime.now().strftime('%H:%M:%S')}", "ok")
 
@@ -488,6 +528,24 @@ class CashlyConsoleApp(App[None]):
             return
         if parsed.kind == CommandKind.TAIL:
             self._handle_tail(parsed.value)
+            return
+        if parsed.kind == CommandKind.DETAIL:
+            self._handle_detail(parsed.value)
+            return
+        if parsed.kind == CommandKind.PLAN:
+            self._handle_plan(parsed.value)
+            return
+        if parsed.kind == CommandKind.STATUS_DEPLOY:
+            self._handle_status_deploy(parsed.value)
+            return
+        if parsed.kind == CommandKind.DIFF:
+            self._handle_diff(parsed.value)
+            return
+        if parsed.kind == CommandKind.DEPLOY:
+            self._handle_deploy(parsed.value)
+            return
+        if parsed.kind == CommandKind.ROLLBACK:
+            self._handle_rollback(parsed.value)
             return
         if parsed.kind == CommandKind.SAVE_QRY:
             self._save_query(parsed.value)
@@ -678,6 +736,15 @@ class CashlyConsoleApp(App[None]):
         self.boot_checks_wait_for_enter = False
         self.boot_scroll_offset = 0
         self.app_state = AppState.PREAUTH
+        self.instance_detail_target = ""
+        self.instance_detail_data = None
+        self.instance_detail_last_refresh_at = "-"
+        self.instance_detail_cache = {}
+        self.deploy_history = []
+        self.last_deploy_report = None
+        self.deploy_readiness = {}
+        self.deploy_readiness_last_refresh_at = "-"
+        self.deploy_readiness_loading = False
 
         self._set_job_status("SESSION PREAUTH", render_now=False)
         self._render()
@@ -706,6 +773,11 @@ class CashlyConsoleApp(App[None]):
                     include_network=True,
                 )
                 self._render()
+            if panel_code == "7":
+                self._start_deploy_readiness_refresh("PANEL OPEN")
+                self._set_job_status("PANEL 7 LOADING PRECHECKS...", render_now=False)
+                self._set_status("PANEL 7 OPEN. DEPLOY PRECHECKS RUNNING...", "warn")
+                return
             self._set_job_status(f"PANEL {panel_code} READY")
             self._set_status(f"PANEL {panel_code} OPEN", "ok")
             return
@@ -730,6 +802,12 @@ class CashlyConsoleApp(App[None]):
             return
         if self.panel == "P":
             self._pick_profile_by_index(value)
+            return
+        if self.panel == "1" and self.panel1_mode == "STATUS":
+            self._open_instance_detail_by_index(value)
+            return
+        if self.panel == "7":
+            self._handle_deployments_menu_number(value)
             return
         self._set_status(f"NO NUMERIC ACTION ON PANEL {self.panel}", "warn")
 
@@ -757,6 +835,390 @@ class CashlyConsoleApp(App[None]):
         self._render()
         self._set_job_status("LOG VIEW ACTIVE")
         self._set_status(f"TAIL ACTIVE: {self.tail_target} ({self.tail_lines})", "ok")
+
+    def _handle_detail(self, detail_arg: str) -> None:
+        if self.panel not in {"1", "I"}:
+            self._set_status("DETAIL IS AVAILABLE ON PANEL 1 OR INSTANCE DETAIL PANEL", "warn")
+            return
+        raw = detail_arg.strip()
+        if not raw:
+            if self.panel == "I" and self.instance_detail_target:
+                self._load_instance_detail(self.instance_detail_target, force=True)
+                self._render()
+                self._set_status(f"INSTANCE DETAIL REFRESHED: {self.instance_detail_target}", "ok")
+                return
+            self._set_status("USAGE: DETAIL <row_number|instance_name>", "warn")
+            return
+        if raw.isdigit():
+            self._open_instance_detail_by_index(raw)
+            return
+        self._open_instance_detail(raw)
+
+    def _open_instance_detail_by_index(self, index_text: str) -> None:
+        if not self.network_probe_results:
+            self._set_status("NO NETWORK TARGETS AVAILABLE. REFRESH PANEL 1 FIRST.", "warn")
+            return
+        try:
+            idx = int(index_text)
+        except ValueError:
+            self._set_status(f"INVALID ROW: {index_text}", "error")
+            return
+        pos = idx - 1
+        if pos < 0 or pos >= len(self.network_probe_results):
+            self._set_status(f"ROW OUT OF RANGE: {idx}", "error")
+            return
+        self._open_instance_detail(self.network_probe_results[pos].name)
+
+    def _open_instance_detail(self, target_name: str) -> None:
+        if not self.network_probe_results:
+            self._set_status("NO NETWORK TARGETS AVAILABLE. REFRESH PANEL 1 FIRST.", "warn")
+            return
+        lookup = target_name.strip().lower()
+        matched = next(
+            (item.name for item in self.network_probe_results if item.name.lower() == lookup),
+            "",
+        )
+        if not matched:
+            matched = next(
+                (item.name for item in self.network_probe_results if lookup in item.name.lower()),
+                "",
+            )
+        if not matched:
+            self._set_status(f"INSTANCE NOT FOUND: {target_name}", "error")
+            return
+
+        self._set_job_status(f"LOADING INSTANCE DETAIL: {matched}...", render_now=False)
+        self.instance_detail_target = matched
+        self._load_instance_detail(matched, force=True)
+        self._goto_panel("I")
+        if self.instance_detail_data and self.instance_detail_data.error:
+            self._set_status(
+                f"INSTANCE DETAIL PARTIAL: {self.instance_detail_data.error}",
+                "warn",
+            )
+            self._set_job_status(f"INSTANCE DETAIL READY (PARTIAL): {matched}", render_now=False)
+        else:
+            self._set_status(f"INSTANCE DETAIL READY: {matched}", "ok")
+            self._set_job_status(f"INSTANCE DETAIL READY: {matched}", render_now=False)
+        self._render()
+
+    def _load_instance_detail(self, target_name: str, force: bool = False) -> None:
+        normalized = target_name.strip().lower()
+        if not normalized:
+            return
+        if not force and normalized in self.instance_detail_cache:
+            self.instance_detail_data = self.instance_detail_cache[normalized]
+            self.instance_detail_last_refresh_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return
+        target_url = self._target_url_for_name(target_name)
+        detail = fetch_instance_detail(target_name, target_url)
+        self.instance_detail_cache[normalized] = detail
+        self.instance_detail_data = detail
+        self.instance_detail_last_refresh_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _target_url_for_name(self, target_name: str) -> str:
+        lookup = target_name.strip().lower()
+        for target in self.network_probe_targets:
+            if target.name.lower() == lookup:
+                return target.url
+        return ""
+
+    def _handle_deployments_menu_number(self, value: str) -> None:
+        mapping = {
+            "1": "crm-dev",
+            "2": "crm-prod",
+            "3": "n8n-server",
+        }
+        if value in mapping:
+            target = mapping[value]
+            if self.selected_postauth_state == AppState.OBSERVE:
+                self._handle_plan(f"show {target}")
+            else:
+                self._handle_deploy(target)
+            return
+        if value == "4":
+            self._set_status("ROLLBACK USAGE: ROLLBACK <target> --to <ref|last-good>", "warn")
+            return
+        if value == "5":
+            self._set_status("DEPLOY HISTORY DISPLAYED BELOW", "ok")
+            self._set_job_status("DEPLOY HISTORY READY", render_now=False)
+            self._render()
+            return
+        if value == "6":
+            self._set_status("RELEASE MANAGEMENT: COMING LATER", "warn")
+            return
+        self._set_status("INVALID DEPLOYMENTS OPTION. USE 1..6", "warn")
+
+    def _handle_plan(self, plan_args: str) -> None:
+        raw = plan_args.strip()
+        if raw.lower().startswith("show "):
+            target = raw[5:].strip().lower()
+        else:
+            target = raw.lower()
+        if not target:
+            self._set_status("USAGE: PLAN show <target>", "warn")
+            return
+        target = self._normalize_deploy_target(target)
+        if not target:
+            self._set_status("UNKNOWN TARGET FOR PLAN", "error")
+            return
+
+        spec = self._deploy_spec_for_target(target)
+        readiness = probe_deploy_target_readiness(
+            target,
+            spec,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+        self.deploy_readiness[target.lower()] = readiness
+        self.deploy_readiness_last_refresh_at = readiness.checked_at
+        self._render()
+
+        fail_checks = [step.name for step in readiness.checks if step.status == "FAIL"]
+        warn_checks = [step.name for step in readiness.checks if step.status == "WARN"]
+        mode_note = "SERVICE REQUIRED FOR PROD" if self._target_requires_service(target) else "MAINT OR SERVICE"
+        if readiness.status == "FAIL":
+            self._set_job_status("PLAN BLOCKED", render_now=False)
+            checks_text = ", ".join(fail_checks[:3]) if fail_checks else "preflight"
+            self._set_status(
+                f"PLAN {target}: NOT READY ({checks_text}) - refresh panel for details",
+                "error",
+            )
+            return
+
+        if readiness.status == "WARN":
+            self._set_job_status(f"PLAN WARN: {target.upper()}", render_now=False)
+            warn_text = ", ".join(warn_checks[:3]) if warn_checks else "non-blocking"
+            self._set_status(
+                f"PLAN {target}: READY WITH WARNINGS ({warn_text}) ({mode_note})",
+                "warn",
+            )
+            return
+
+        self._set_job_status(f"PLAN READY: {target.upper()}", render_now=False)
+        self._set_status(
+            f"PLAN {target}: READY preflight -> fetch/build -> pm2/nginx -> verify -> record ({mode_note})",
+            "ok",
+        )
+
+    def _handle_status_deploy(self, status_args: str) -> None:
+        target = self._normalize_deploy_target(status_args.strip().lower())
+        if not target:
+            self._set_status("USAGE: STATUS DEPLOY <target>", "warn")
+            return
+        latest = self._latest_deploy_record(target)
+        if not latest:
+            self._set_status(f"NO DEPLOY HISTORY FOR {target}", "warn")
+            return
+        self._set_status(
+            f"DEPLOY STATUS {target}: {latest.get('status', '-')} @ {latest.get('finished_at', '-')}",
+            "ok",
+        )
+
+    def _handle_diff(self, diff_args: str) -> None:
+        raw = diff_args.strip()
+        if not raw:
+            self._set_status("USAGE: DIFF <target> --current --target <sha>", "warn")
+            return
+        target = self._normalize_deploy_target(raw.split()[0].lower())
+        if not target:
+            self._set_status("UNKNOWN TARGET FOR DIFF", "error")
+            return
+        self._set_job_status(f"DIFF READY: {target.upper()}", render_now=False)
+        self._set_status(
+            f"DIFF {target}: command accepted (implementation stub for git/current vs target)",
+            "ok",
+        )
+
+    def _handle_deploy(self, deploy_args: str) -> None:
+        target, revision, tag, error = self._parse_deploy_args(deploy_args)
+        if error:
+            self._set_status(error, "error")
+            return
+        if not target:
+            self._set_status("USAGE: DEPLOY <target> [REV <sha>|TAG <tag>]", "warn")
+            return
+
+        target = self._normalize_deploy_target(target)
+        if not target:
+            self._set_status("UNKNOWN DEPLOY TARGET", "error")
+            return
+        if not self._mode_allows_write(target):
+            return
+
+        spec = self._deploy_spec_for_target(target)
+        if not spec:
+            self._set_status(f"NO DEPLOY SSH CONFIG FOR {target}", "error")
+            self._set_job_status("DEPLOY FAILED")
+            return
+
+        readiness = probe_deploy_target_readiness(
+            target,
+            spec,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+        self.deploy_readiness[target.lower()] = readiness
+        self.deploy_readiness_last_refresh_at = readiness.checked_at
+        if readiness.status == "FAIL":
+            fail_step = next((step for step in readiness.checks if step.status == "FAIL"), None)
+            reason = fail_step.name if fail_step else "PRECHECK"
+            self._set_job_status("DEPLOY BLOCKED")
+            self._set_status(f"DEPLOY BLOCKED: {target} not ready ({reason})", "error")
+            self._render()
+            return
+
+        if readiness.status == "WARN":
+            self._set_status(
+                f"DEPLOY PRECHECK WARNINGS: {target} (continuing)",
+                "warn",
+            )
+
+        self._set_job_status(f"DEPLOY RUNNING: {target.upper()}...", render_now=False)
+        self._render()
+        report = run_deploy_via_ssh(spec, revision=revision, tag=tag)
+        self.last_deploy_report = report
+        self._record_deploy_report(report)
+        self._set_job_status(f"DEPLOY {report.status}: {target.upper()}", render_now=False)
+        level = "ok" if report.status == "OK" else ("warn" if report.status == "WARN" else "error")
+        self._set_status(
+            f"DEPLOY {target} {report.status} ref={report.ref} finished={report.finished_at}",
+            level,
+        )
+        self._render()
+
+    def _handle_rollback(self, rollback_args: str) -> None:
+        target, to_ref, error = self._parse_rollback_args(rollback_args)
+        if error:
+            self._set_status(error, "error")
+            return
+        if not target:
+            self._set_status("USAGE: ROLLBACK <target> --to <ref|last-good>", "warn")
+            return
+        target = self._normalize_deploy_target(target)
+        if not target:
+            self._set_status("UNKNOWN ROLLBACK TARGET", "error")
+            return
+        if not self._mode_allows_write(target):
+            return
+
+        spec = self._deploy_spec_for_target(target)
+        if not spec:
+            self._set_status(f"NO DEPLOY SSH CONFIG FOR {target}", "error")
+            self._set_job_status("ROLLBACK FAILED")
+            return
+
+        readiness = probe_deploy_target_readiness(
+            target,
+            spec,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+        self.deploy_readiness[target.lower()] = readiness
+        self.deploy_readiness_last_refresh_at = readiness.checked_at
+        if readiness.status == "FAIL":
+            fail_step = next((step for step in readiness.checks if step.status == "FAIL"), None)
+            reason = fail_step.name if fail_step else "PRECHECK"
+            self._set_job_status("ROLLBACK BLOCKED")
+            self._set_status(f"ROLLBACK BLOCKED: {target} not ready ({reason})", "error")
+            self._render()
+            return
+
+        self._set_job_status(f"ROLLBACK RUNNING: {target.upper()}...", render_now=False)
+        self._render()
+        report = run_rollback_via_ssh(spec, to_ref or "last-good")
+        self.last_deploy_report = report
+        self._record_deploy_report(report)
+        self._set_job_status(f"ROLLBACK {report.status}: {target.upper()}", render_now=False)
+        level = "ok" if report.status == "OK" else ("warn" if report.status == "WARN" else "error")
+        self._set_status(
+            f"ROLLBACK {target} {report.status} ref={report.ref} finished={report.finished_at}",
+            level,
+        )
+        self._render()
+
+    def _record_deploy_report(self, report: DeployRunResult) -> None:
+        item = {
+            "action": report.action,
+            "target": report.target,
+            "status": report.status,
+            "started_at": report.started_at,
+            "finished_at": report.finished_at,
+            "ref": report.ref,
+        }
+        self.deploy_history.append(item)
+        self._record_session_job(
+            f"{report.action}_{report.target}",
+            f"status={report.status} ref={report.ref} finished={report.finished_at}",
+            report.status,
+        )
+        for step in report.steps:
+            self._record_session_job(
+                f"{report.action}_STEP_{step.name}",
+                step.detail[:400],
+                step.status,
+            )
+
+    def _latest_deploy_record(self, target: str) -> dict[str, str] | None:
+        for item in reversed(self.deploy_history):
+            if item.get("target", "").lower() == target.lower():
+                return item
+        return None
+
+    def _mode_allows_write(self, target: str) -> bool:
+        if self.selected_postauth_state == AppState.OBSERVE:
+            self._set_status("OBSERVE MODE IS VIEW-ONLY. SWITCH TO MAINT/SERVICE.", "error")
+            self._set_job_status("DEPLOY DENIED")
+            return False
+        if self._target_requires_service(target) and self.selected_postauth_state != AppState.SERVICE:
+            self._set_status(f"{target} REQUIRES SERVICE MODE", "error")
+            self._set_job_status("DEPLOY DENIED")
+            return False
+        return True
+
+    def _target_requires_service(self, target: str) -> bool:
+        return "prod" in target.lower()
+
+    def _deploy_spec_for_target(self, target: str) -> DeploySpec | None:
+        return self.deploy_specs.get(target.lower())
+
+    def _normalize_deploy_target(self, raw: str) -> str:
+        value = raw.strip().lower()
+        aliases = {
+            "crm-dev": "cashly-app-development",
+            "crm-prod": "cashly-app-production",
+            "crm-development": "cashly-app-development",
+            "crm-production": "cashly-app-production",
+            "n8n": "n8n-server",
+        }
+        candidate = aliases.get(value, value)
+        for target in self.network_probe_targets:
+            if target.name.lower() == candidate:
+                return target.name
+        return ""
+
+    @staticmethod
+    def _parse_deploy_args(raw: str) -> tuple[str, str, str, str]:
+        tokens = raw.strip().split()
+        if not tokens:
+            return "", "", "", ""
+        target = tokens[0]
+        if len(tokens) == 1:
+            return target, "", "", ""
+        if len(tokens) >= 3 and tokens[1].upper() == "REV":
+            return target, tokens[2], "", ""
+        if len(tokens) >= 3 and tokens[1].upper() == "TAG":
+            return target, "", tokens[2], ""
+        return "", "", "", "USAGE: DEPLOY <target> [REV <sha>|TAG <tag>]"
+
+    @staticmethod
+    def _parse_rollback_args(raw: str) -> tuple[str, str, str]:
+        tokens = raw.strip().split()
+        if not tokens:
+            return "", "", ""
+        target = tokens[0]
+        if len(tokens) == 1:
+            return target, "last-good", ""
+        if len(tokens) >= 3 and tokens[1].lower() in {"--to", "to"}:
+            return target, tokens[2], ""
+        return "", "", "USAGE: ROLLBACK <target> --to <ref|last-good>"
 
     def _save_query(self, query_name: str) -> None:
         self._set_job_status("SAVING QUERY...")
@@ -949,6 +1411,16 @@ class CashlyConsoleApp(App[None]):
         self.log_scroll_offset = 0
         self.service_confirm_required = False
         self.service_confirm_scope = ""
+        self.instance_detail_target = ""
+        self.instance_detail_data = None
+        self.instance_detail_last_refresh_at = "-"
+        self.instance_detail_cache = {}
+        self.deploy_specs = load_deploy_specs([target.name for target in self.network_probe_targets])
+        self.deploy_history = []
+        self.last_deploy_report = None
+        self.deploy_readiness = {}
+        self.deploy_readiness_last_refresh_at = "-"
+        self.deploy_readiness_loading = False
         self._render()
 
     def _goto_panel(self, panel: str) -> None:
@@ -979,6 +1451,103 @@ class CashlyConsoleApp(App[None]):
             self.network_probe_last_refresh_monotonic = time.monotonic()
             self.network_probe_last_refresh_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    def _collect_deploy_readiness(self) -> tuple[dict[str, DeploySpec], dict[str, DeployReadinessResult], str]:
+        target_names = [target.name for target in self.network_probe_targets]
+        deploy_specs = load_deploy_specs(target_names)
+        deploy_readiness = probe_deploy_readiness(
+            target_names,
+            deploy_specs,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+        checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return deploy_specs, deploy_readiness, checked_at
+
+    def _refresh_deploy_readiness(self) -> None:
+        deploy_specs, deploy_readiness, checked_at = self._collect_deploy_readiness()
+        self.deploy_specs = deploy_specs
+        self.deploy_readiness = deploy_readiness
+        self.deploy_readiness_last_refresh_at = checked_at
+
+    def _start_deploy_readiness_refresh(self, reason: str) -> None:
+        if self.deploy_readiness_loading:
+            return
+        self.deploy_readiness_loading = True
+        self.deploy_readiness_spinner_index = 0
+        self.deploy_readiness_seq += 1
+        seq = self.deploy_readiness_seq
+        self._set_job_status("DEPLOY PREFLIGHT RUNNING...", render_now=False)
+        self._set_status(f"{reason}: DEPLOY PREFLIGHT RUNNING...", "warn")
+        self._render()
+        self.refresh()
+        threading.Thread(
+            target=self._deploy_readiness_worker,
+            args=(seq,),
+            daemon=True,
+        ).start()
+
+    def _deploy_readiness_worker(self, seq: int) -> None:
+        try:
+            deploy_specs, deploy_readiness, checked_at = self._collect_deploy_readiness()
+            self.call_from_thread(
+                self._finish_deploy_readiness_refresh,
+                seq,
+                deploy_specs,
+                deploy_readiness,
+                checked_at,
+                "",
+            )
+        except Exception as exc:
+            self.call_from_thread(
+                self._finish_deploy_readiness_refresh,
+                seq,
+                None,
+                None,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                str(exc),
+            )
+
+    def _finish_deploy_readiness_refresh(
+        self,
+        seq: int,
+        deploy_specs: dict[str, DeploySpec] | None,
+        deploy_readiness: dict[str, DeployReadinessResult] | None,
+        checked_at: str,
+        error: str,
+    ) -> None:
+        if seq != self.deploy_readiness_seq:
+            return
+        self.deploy_readiness_loading = False
+        if error:
+            self._set_job_status("DEPLOY PREFLIGHT FAILED", render_now=False)
+            self._set_status(f"DEPLOY PREFLIGHT FAILED: {error}", "error")
+            self._render()
+            self.refresh()
+            return
+
+        self.deploy_specs = deploy_specs or {}
+        self.deploy_readiness = deploy_readiness or {}
+        self.deploy_readiness_last_refresh_at = checked_at
+
+        fail_count = sum(1 for item in self.deploy_readiness.values() if item.status == "FAIL")
+        warn_count = sum(1 for item in self.deploy_readiness.values() if item.status == "WARN")
+        if fail_count > 0:
+            self._set_job_status("DEPLOY PREFLIGHT NOT READY", render_now=False)
+            self._set_status(
+                f"DEPLOY PREFLIGHT COMPLETE: {fail_count} FAIL / {warn_count} WARN",
+                "warn",
+            )
+        elif warn_count > 0:
+            self._set_job_status("DEPLOY PREFLIGHT WARN", render_now=False)
+            self._set_status(
+                f"DEPLOY PREFLIGHT COMPLETE: 0 FAIL / {warn_count} WARN",
+                "warn",
+            )
+        else:
+            self._set_job_status("DEPLOY PREFLIGHT READY", render_now=False)
+            self._set_status("DEPLOY PREFLIGHT COMPLETE: ALL TARGETS READY", "ok")
+        self._render()
+        self.refresh()
+
     def _network_probe_refresh_due(self) -> bool:
         if self.network_probe_last_refresh_monotonic <= 0:
             return True
@@ -1008,8 +1577,22 @@ class CashlyConsoleApp(App[None]):
         if self.authenticated and self.selected_postauth_state == AppState.SERVICE:
             if self._service_ttl_remaining_seconds() <= 0:
                 self._auto_revert_service_mode("SERVICE TTL EXPIRED. RETURNED TO OBSERVE")
-        if self.panel == "1" and self.panel1_mode == "STATUS" and self._network_probe_refresh_due():
+        panel_needs_status_refresh = (
+            (self.panel == "1" and self.panel1_mode == "STATUS")
+            or self.panel == "I"
+        )
+        if panel_needs_status_refresh and self._network_probe_refresh_due():
             self._refresh_system_status(force_network=True)
+            if self.panel == "I" and self.instance_detail_target:
+                self._load_instance_detail(self.instance_detail_target, force=True)
+        self._render()
+
+    def _on_spinner_tick(self) -> None:
+        if not self.deploy_readiness_loading:
+            return
+        self.deploy_readiness_spinner_index = (
+            self.deploy_readiness_spinner_index + 1
+        ) % len(self.deploy_readiness_spinner_frames)
         self._render()
 
     def _apply_state_theme(self) -> None:
@@ -1058,19 +1641,19 @@ class CashlyConsoleApp(App[None]):
         lines = [
             self._line_lr(
                 "CASHLY CTL OPERATIONS CONSOLE (cashlyctl console)",
-                right_env.ljust(right_col_width),
+                right_env.rjust(right_col_width),
                 left_style=accent_style,
                 right_style=accent_style,
             ),
             self._line_lr(
                 f"MODE: {self._mode_badge_text(self.app_state)}",
-                right_time.ljust(right_col_width),
+                right_time.rjust(right_col_width),
                 left_style=mode_style,
                 right_style=accent_style,
             ),
             self._line_lr(
                 f"JOB STATUS: {self.job_status}",
-                right_ttl.ljust(right_col_width) if right_ttl else "",
+                right_ttl.rjust(right_col_width) if right_ttl else "",
                 left_style=accent_style,
                 right_style=accent_style,
             ),
@@ -1089,8 +1672,12 @@ class CashlyConsoleApp(App[None]):
             lines.extend(self._panel_boot_checks_lines())
         elif self.panel == "4":
             lines.extend(self._panel4_lines())
+        elif self.panel == "7":
+            lines.extend(self._panel7_deployments_lines())
         elif self.panel == "1":
             lines.extend(self._panel1_lines())
+        elif self.panel == "I":
+            lines.extend(self._panel_instance_detail_lines())
         elif self.panel == "2":
             lines.extend(self._panel2_lines())
         elif self.panel == "P":
@@ -1122,19 +1709,19 @@ class CashlyConsoleApp(App[None]):
         return [
             self._line_lr(
                 "CASHLYCTL OPERATIONS CONSOLE 0.1",
-                right_ip.ljust(right_col_width),
+                right_ip.rjust(right_col_width),
                 left_style=accent_style,
                 right_style=accent_style,
             ),
             self._line_lr(
                 f"MODE: {self._mode_badge_text(header_mode)}",
-                right_time.ljust(right_col_width),
+                right_time.rjust(right_col_width),
                 left_style=self._mode_style(header_mode),
                 right_style=accent_style,
             ),
             self._line_lr(
                 f"JOB STATUS: {self.job_status}",
-                right_ttl.ljust(right_col_width) if right_ttl else "",
+                right_ttl.rjust(right_col_width) if right_ttl else "",
                 left_style=accent_style,
                 right_style=accent_style,
             ),
@@ -1393,10 +1980,16 @@ class CashlyConsoleApp(App[None]):
         return lines
 
     def _panel1_status_lines(self) -> list[str]:
-        row_cells = [self._network_probe_row_cells(result) for result in self.network_probe_results]
+        row_cells = [
+            self._network_probe_row_cells(result, idx + 1)
+            for idx, result in enumerate(self.network_probe_results)
+        ]
         col_widths = self._network_probe_column_widths(row_cells)
+        rollup = self._network_rollup_line()
         lines = [
             self._section_header("NETWORK / EDGE LAYER"),
+            "",
+            rollup,
             "",
             self._network_probe_table_header(col_widths),
             self._rule("-"),
@@ -1408,8 +2001,8 @@ class CashlyConsoleApp(App[None]):
                 ]
             )
         else:
-            for result in self.network_probe_results:
-                lines.append(self._network_probe_table_row(result, col_widths))
+            for idx, result in enumerate(self.network_probe_results, start=1):
+                lines.append(self._network_probe_table_row(result, col_widths, idx))
         lines.extend(
             [
                 "",
@@ -1418,6 +2011,7 @@ class CashlyConsoleApp(App[None]):
                     f"AUTO REFRESH: {self.network_probe_interval_seconds}s"
                     f" | TARGETS: {len(self.network_probe_targets)}"
                 ),
+                "DRILL DOWN: ENTER ROW NUMBER OR DETAIL <instance_name>",
                 "",
                 "SERVICES",
                 "  NAME        HEALTH   DETAIL",
@@ -1444,30 +2038,47 @@ class CashlyConsoleApp(App[None]):
         return prefix + ("-" * (width - len(prefix)))
 
     def _network_probe_table_header(self, widths: tuple[int, int, int, int]) -> str:
-        name_w, dns_w, tls_w, http_w = widths
-        return f"{'NAME':<{name_w}} {'DNS':<{dns_w}} {'TLS':<{tls_w}} {'HTTP':<{http_w}}"
+        name_w, dns_w, tls_w, http_w, origin_w = widths
+        return (
+            f"{'NAME':<{name_w}} "
+            f"{'DNS':<{dns_w}} "
+            f"{'TLS':<{tls_w}} "
+            f"{'HTTP':<{http_w}} "
+            f"{'ORIGIN':<{origin_w}}"
+        )
 
     def _network_probe_table_row(
         self,
         result: NetworkProbeResult,
-        widths: tuple[int, int, int, int],
+        widths: tuple[int, int, int, int, int],
+        index: int,
     ) -> str:
-        name_w, dns_w, tls_w, http_w = widths
-        name_raw, dns_raw, tls_raw, http_raw = self._network_probe_row_cells(result)
+        name_w, dns_w, tls_w, http_w, origin_w = widths
+        name_raw, dns_raw, tls_raw, http_raw, origin_raw = self._network_probe_row_cells(
+            result,
+            index,
+        )
         name_plain = f"{self._clip_cell(name_raw, name_w):<{name_w}}"
         dns_plain = f"{self._clip_cell(dns_raw, dns_w):<{dns_w}}"
         tls_plain = f"{self._clip_cell(tls_raw, tls_w):<{tls_w}}"
         http_plain = f"{self._clip_cell(http_raw, http_w):<{http_w}}"
+        origin_plain = f"{self._clip_cell(origin_raw, origin_w):<{origin_w}}"
 
-        name_cell = self._colorize_probe_name_cell(name_plain)
+        name_cell = name_plain
         dns_cell = self._colorize_probe_status_cell(dns_plain)
         tls_cell = self._colorize_probe_status_cell(tls_plain)
+        tls_cell = self._colorize_tls_expiry(tls_cell, result.tls_days_left)
         http_cell = self._colorize_probe_http_cell(http_plain, result.http_status)
+        origin_cell = origin_plain
 
-        return f"{name_cell} {dns_cell} {tls_cell} {http_cell}"
+        return f"{name_cell} {dns_cell} {tls_cell} {http_cell} {origin_cell}"
 
-    def _network_probe_row_cells(self, result: NetworkProbeResult) -> tuple[str, str, str, str]:
-        name_cell = f"{result.name} ({result.overall.value})"
+    def _network_probe_row_cells(
+        self,
+        result: NetworkProbeResult,
+        index: int,
+    ) -> tuple[str, str, str, str, str]:
+        name_cell = f"{index:>2}  {result.name}"
         dns_state = "OK" if result.dns_ok else "FAIL"
         dns_cell = f"{dns_state} {result.dns_ms}ms ip={result.dns_ip}"
 
@@ -1483,33 +2094,35 @@ class CashlyConsoleApp(App[None]):
         http_cell = f"{http_state} {result.http_ms}ms {http_status}"
         if result.http_hint and result.http_hint != "-":
             http_cell += f" {result.http_hint}"
-        return name_cell, dns_cell, tls_cell, http_cell
+        origin_cell = self._origin_display(result)
+        return name_cell, dns_cell, tls_cell, http_cell, origin_cell
 
     def _network_probe_column_widths(
         self,
-        rows: list[tuple[str, str, str, str]],
-    ) -> tuple[int, int, int, int]:
-        headers = ("NAME", "DNS", "TLS", "HTTP")
+        rows: list[tuple[str, str, str, str, str]],
+    ) -> tuple[int, int, int, int, int]:
+        headers = ("NAME", "DNS", "TLS", "HTTP", "ORIGIN")
         desired = [len(header) for header in headers]
         for row in rows:
-            for idx in range(4):
+            for idx in range(5):
                 desired[idx] = max(desired[idx], len(row[idx]))
 
-        available = max(20, self._width() - 3)
+        available = max(40, self._width() - 4)
         total_desired = sum(desired)
         if total_desired <= available:
-            return desired[0], desired[1], desired[2], desired[3]
+            return desired[0], desired[1], desired[2], desired[3], desired[4]
 
         minimum = [
             max(len(headers[0]), 14),
             max(len(headers[1]), 16),
             max(len(headers[2]), 18),
             max(len(headers[3]), 14),
+            max(len(headers[4]), 18),
         ]
         widths = desired[:]
         overflow = total_desired - available
 
-        shrink_order = (2, 1, 3, 0)
+        shrink_order = (2, 4, 1, 3, 0)
         while overflow > 0:
             changed = False
             for idx in shrink_order:
@@ -1522,7 +2135,7 @@ class CashlyConsoleApp(App[None]):
             if not changed:
                 break
 
-        return widths[0], widths[1], widths[2], widths[3]
+        return widths[0], widths[1], widths[2], widths[3], widths[4]
 
     @staticmethod
     def _clip_cell(text: str, width: int) -> str:
@@ -1539,13 +2152,6 @@ class CashlyConsoleApp(App[None]):
         if result.http_status in {401, 403, 429} or result.http_status >= 500:
             return "WARN"
         return "OK"
-
-    def _colorize_probe_name_cell(self, text: str) -> str:
-        for status in ("OK", "WARN", "FAIL"):
-            token = f"({status})"
-            if token in text:
-                return text.replace(token, self._style_text(token, self._status_style(status)), 1)
-        return text
 
     def _colorize_probe_status_cell(self, text: str) -> str:
         stripped = text.lstrip()
@@ -1570,6 +2176,16 @@ class CashlyConsoleApp(App[None]):
             count=1,
         )
 
+    def _colorize_tls_expiry(self, text: str, tls_days_left: int) -> str:
+        style = self._tls_expiry_style(tls_days_left)
+        if not style:
+            return text
+        match = re.search(r"exp=(\d+)d", text)
+        if not match:
+            return text
+        token = match.group(0)
+        return text.replace(token, self._style_text(token, style), 1)
+
     @staticmethod
     def _status_style(status: str) -> str:
         normalized = status.upper()
@@ -1593,6 +2209,46 @@ class CashlyConsoleApp(App[None]):
             return "bold #ff3030"
         return "bold #ffd700"
 
+    @staticmethod
+    def _tls_expiry_style(days_left: int) -> str | None:
+        if days_left <= 0:
+            return "bold #ff3030"
+        if days_left < 14:
+            return "bold #ff3030"
+        if days_left < 30:
+            return "bold #ffd700"
+        return "bold #00ff00"
+
+    def _network_rollup_line(self) -> str:
+        if not self.network_probe_results:
+            return "NETWORK STATUS: UNKNOWN (NO DATA)"
+
+        ok_count = sum(1 for item in self.network_probe_results if item.overall.value == "OK")
+        warn_count = sum(1 for item in self.network_probe_results if item.overall.value == "WARN")
+        fail_count = sum(1 for item in self.network_probe_results if item.overall.value == "FAIL")
+        total = len(self.network_probe_results)
+
+        if fail_count > 0:
+            label = self._style_text("IMPACTED", self._status_style("FAIL"))
+            return f"NETWORK STATUS: {label} ({fail_count} FAIL)"
+        if warn_count > 0:
+            label = self._style_text("DEGRADED", self._status_style("WARN"))
+            return f"NETWORK STATUS: {label} ({ok_count} OK / {warn_count} WARN)"
+        label = self._style_text("HEALTHY", self._status_style("OK"))
+        return f"NETWORK STATUS: {label} ({ok_count}/{total} OK)"
+
+    def _origin_display(self, result: NetworkProbeResult) -> str:
+        env_key = f"CASHLYCTL_ORIGIN_{re.sub(r'[^A-Za-z0-9]+', '_', result.name).upper()}"
+        configured = _runtime_env(env_key, "").strip()
+        if configured:
+            return configured
+        cached = self.instance_detail_cache.get(result.name.lower())
+        if cached and cached.origin_ip and cached.origin_ip != "-":
+            return cached.origin_ip
+        if "cloudflare" in result.http_hint.lower():
+            return "hidden-behind-cloudflare"
+        return result.dns_ip
+
     def _panel1_log_view_lines(self) -> list[str]:
         service = self.tail_target
         source = "journalctl -u neo4j" if "neo4j" in service else "journalctl -u dealsense"
@@ -1605,6 +2261,157 @@ class CashlyConsoleApp(App[None]):
         lines.append(self._rule("-"))
         lines.append("")
         return lines
+
+    def _panel_instance_detail_lines(self) -> list[str]:
+        target = self.instance_detail_target or "-"
+        detail = self.instance_detail_data
+        probe = self._probe_result_for_target(target)
+        lines = [
+            self._line_lr(
+                "PANEL: I  INSTANCE DETAIL",
+                f"TARGET: {target}",
+            ),
+            self._rule("="),
+            "",
+        ]
+        if not target:
+            lines.extend(
+                [
+                    "No instance selected.",
+                    "Go to Panel 1 and enter a row number, or use DETAIL <name>.",
+                    "",
+                ]
+            )
+            return lines
+
+        if detail is None:
+            lines.extend(
+                [
+                    "Instance detail not loaded.",
+                    "Use REFRESH or DETAIL <name>.",
+                    "",
+                ]
+            )
+            return lines
+
+        lines.extend(
+            [
+                self._line_lr(
+                    "IDENTITY",
+                    f"AWS SDK: {'READY' if self.aws_sdk_ready else 'MISSING'}",
+                ),
+                self._rule("-"),
+                f"  Name:         {detail.identity_name}",
+                f"  Instance ID:  {detail.instance_id}",
+                f"  State:        {detail.state}",
+                f"  AZ:           {detail.availability_zone}",
+                f"  Private IP:   {detail.private_ip}",
+                f"  Public IP:    {detail.public_ip}",
+                f"  Launch Time:  {detail.launch_time}   Uptime: {detail.uptime}",
+                f"  Type:         {detail.instance_type}   AMI: {detail.image_id}",
+                f"  OS Guess:     {detail.os_guess}",
+                "",
+                "NETWORK PATH",
+                self._rule("-"),
+                f"  Cloudflare Hostname: {detail.hostname}",
+                f"  ALB Listener:        {detail.alb_listener}",
+                f"  Target Group:        {detail.target_group}",
+                f"  Target Health:       {detail.target_health}",
+                f"  Health Reason:       {detail.target_health_reason}",
+                f"  Origin (ALB/Instance): {detail.origin_ip}",
+                "",
+                "APP HEALTH",
+                self._rule("-"),
+            ]
+        )
+        if probe:
+            overall_style = self._status_style(probe.overall.value)
+            overall_text = self._style_text(probe.overall.value, overall_style)
+            http_state = self._http_state(probe)
+            http_state_text = self._style_text(http_state, self._status_style(http_state))
+            http_code_text = str(probe.http_status) if probe.http_status else "-"
+            code_style = self._http_code_style(probe.http_status) or "white"
+            lines.extend(
+                [
+                    f"  Overall:      {overall_text}",
+                    f"  DNS:          {probe.dns_ip} ({probe.dns_ms}ms)",
+                    f"  TLS:          {probe.tls_ms}ms exp={probe.tls_days_left}d cn={probe.tls_cn or '-'}",
+                    (
+                        f"  HTTP:         {http_state_text} {probe.http_ms}ms "
+                        f"{self._style_text(http_code_text, code_style)}  hint={probe.http_hint}"
+                    ),
+                ]
+            )
+        else:
+            lines.append("  No HTTP/TLS probe data in current session.")
+
+        system_status = self._style_text(
+            detail.status_check_system,
+            self._aws_check_style(detail.status_check_system),
+        )
+        instance_status = self._style_text(
+            detail.status_check_instance,
+            self._aws_check_style(detail.status_check_instance),
+        )
+        lines.extend(
+            [
+                "",
+                "COMPUTE",
+                self._rule("-"),
+                f"  CloudWatch CPU (15m avg): {detail.cpu_avg_15m}",
+                f"  EC2 Status Checks: system={system_status} instance={instance_status}",
+                "",
+                "LOGS",
+                self._rule("-"),
+                "  Open recent nginx logs:    TODO (SSM session integration)",
+                "  Open recent application logs: TODO (SSM / CW logs integration)",
+                "",
+                "ACTIONS",
+                self._rule("-"),
+            ]
+        )
+
+        if self.selected_postauth_state == AppState.OBSERVE:
+            lines.append("  OBSERVE mode: view-only.")
+        else:
+            lines.append("  MAINT/SERVICE: restart/deregister actions planned (gated confirmation).")
+
+        lines.extend(
+            [
+                "",
+                f"LAST DETAIL REFRESH: {self.instance_detail_last_refresh_at}",
+            ]
+        )
+        if detail.error:
+            lines.append(f"AWS NOTE: {detail.error}")
+        if detail.source_note:
+            lines.append(f"AWS HINT: {detail.source_note}")
+        lines.extend(
+            [
+                "",
+                "Use PF3=Back to return to Panel 1. Use DETAIL <name> or REFRESH to reload.",
+                "",
+            ]
+        )
+        return lines
+
+    def _probe_result_for_target(self, target_name: str) -> NetworkProbeResult | None:
+        lookup = target_name.strip().lower()
+        for item in self.network_probe_results:
+            if item.name.lower() == lookup:
+                return item
+        return None
+
+    @staticmethod
+    def _aws_check_style(status: str) -> str:
+        value = status.strip().lower()
+        if value == "ok":
+            return "bold #00ff00"
+        if value in {"impaired", "insufficient-data"}:
+            return "bold #ffd700"
+        if value == "-":
+            return "white"
+        return "bold #ff3030"
 
     def _panel2_lines(self) -> list[str]:
         lines = [
@@ -1682,6 +2489,296 @@ class CashlyConsoleApp(App[None]):
             )
         lines.extend(["", "Showing last 20 jobs for this session.", ""])
         return lines
+
+    def _panel7_deployments_lines(self) -> list[str]:
+        state_mode = self.selected_postauth_state.value
+        targets = [target.name for target in self.network_probe_targets]
+        readiness_items = [
+            self.deploy_readiness.get(target_name.lower())
+            for target_name in targets
+            if target_name.strip()
+        ]
+        ready_count = sum(1 for item in readiness_items if item and item.status == "OK")
+        warn_count = sum(1 for item in readiness_items if item and item.status == "WARN")
+        fail_count = sum(1 for item in readiness_items if item and item.status == "FAIL")
+        unknown_count = len(readiness_items) - ready_count - warn_count - fail_count
+
+        if fail_count > 0:
+            rollup_label = "NOT READY"
+            rollup_style = "bold #ff3030"
+        elif warn_count > 0:
+            rollup_label = "READY WITH WARNINGS"
+            rollup_style = "bold #ffd700"
+        elif ready_count > 0 and unknown_count == 0:
+            rollup_label = "READY"
+            rollup_style = "bold #00ff00"
+        else:
+            rollup_label = "UNKNOWN"
+            rollup_style = "white"
+
+        precheck_rows = [
+            self._deploy_precheck_cells(target_name)
+            for target_name in targets
+        ]
+        precheck_widths = self._deploy_precheck_column_widths(precheck_rows)
+
+        lines = [
+            self._line_lr("PANEL: 7  DEPLOYMENTS", f"MODE: {state_mode}"),
+            self._rule("="),
+            "",
+        ]
+        if self.deploy_readiness_loading:
+            spinner = self.deploy_readiness_spinner_frames[
+                self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+            ]
+            lines.extend(
+                [
+                    self._style_text(
+                        f"  PREFLIGHT RUNNING [{spinner}] checking SSH/auth/PM2/git...",
+                        "bold #ffd700",
+                    ),
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "  1  Deploy CRM Dev",
+                "  2  Deploy CRM Prod",
+                "  3  Deploy n8n",
+                "  4  Rollback",
+                "  5  Deploy History",
+                "  6  Release Management (later)",
+                "",
+                "COMMANDS:",
+                "  DEPLOY crm-dev",
+                "  DEPLOY crm-prod REV <sha>",
+                "  DEPLOY crm-prod TAG <tag>",
+                "  ROLLBACK crm-prod --to last-good",
+                "  STATUS DEPLOY crm-prod",
+                "  DIFF crm-prod --current --target <sha>",
+                "  PLAN show crm-prod",
+                "",
+                "DEPLOY PRECHECK STATUS",
+                self._rule("-"),
+                self._style_text(
+                    f"  OVERALL: {rollup_label} "
+                    f"({ready_count} READY / {warn_count} WARN / {fail_count} FAIL / {unknown_count} UNKNOWN)",
+                    rollup_style,
+                ),
+                f"  LAST PREFLIGHT: {self.deploy_readiness_last_refresh_at}",
+                self._deploy_precheck_header(precheck_widths),
+                self._rule("-"),
+            ]
+        )
+        for row in precheck_rows:
+            lines.append(self._deploy_precheck_row(row, precheck_widths))
+        lines.extend(
+            [
+                "",
+                "  PF5 refreshes readiness checks. PLAN show <target> reruns checks for one target.",
+                "",
+            ]
+        )
+        if self.selected_postauth_state == AppState.OBSERVE:
+            lines.extend(
+                [
+                    "POLICY:",
+                    "  OBSERVE = view-only (PLAN / STATUS / DIFF only)",
+                    "  MAINT/SERVICE = deploy and rollback allowed",
+                    "",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "POLICY:",
+                    "  WRITE MODE ACTIVE (MAINT/SERVICE)",
+                    "  PROD TARGETS REQUIRE SERVICE MODE",
+                    "",
+                ]
+            )
+
+        lines.append("RECENT DEPLOY HISTORY")
+        lines.append(self._rule("-"))
+        if not self.deploy_history:
+            lines.extend(["  No deployment runs in this session.", ""])
+        else:
+            lines.append("  FINISHED AT          ACTION    TARGET                    STATUS  REF")
+            for item in self.deploy_history[-12:]:
+                lines.append(
+                    f"  {item.get('finished_at', '-'):<20} "
+                    f"{item.get('action', '-'):<9} "
+                    f"{item.get('target', '-'):<25} "
+                    f"{item.get('status', '-'):<6} "
+                    f"{item.get('ref', '-')}"
+                )
+            lines.append("")
+
+        if self.last_deploy_report:
+            lines.append("LAST RUN STEPS")
+            lines.append(self._rule("-"))
+            for step in self.last_deploy_report.steps[-8:]:
+                lines.append(f"  {step.name:<18} [{step.status}] {step.detail[:120]}")
+            lines.append("")
+        return lines
+
+    def _deploy_mode_gate_state(self, target: str) -> str:
+        if self.selected_postauth_state == AppState.OBSERVE:
+            return "VIEW"
+        if self._target_requires_service(target) and self.selected_postauth_state != AppState.SERVICE:
+            return "BLOCK"
+        return "ALLOW"
+
+    def _readiness_check_status(
+        self,
+        readiness: DeployReadinessResult | None,
+        check_name: str,
+    ) -> str:
+        if not readiness:
+            return "UNKNOWN"
+        for check in readiness.checks:
+            if check.name == check_name:
+                return check.status
+        return "-"
+
+    def _deploy_readiness_summary(self, readiness: DeployReadinessResult | None) -> str:
+        if not readiness:
+            return "No checks run yet"
+        fail_step = next((step for step in readiness.checks if step.status == "FAIL"), None)
+        if fail_step:
+            return f"{fail_step.name}: {fail_step.detail}"
+        warn_step = next((step for step in readiness.checks if step.status == "WARN"), None)
+        if warn_step:
+            return f"{warn_step.name}: {warn_step.detail}"
+        return "All critical checks passing"
+
+    def _deploy_status_token(self, status: str, width: int = 7) -> str:
+        token = (status or "-").strip().upper()
+        plain = f"{self._clip_cell(token, width):<{width}}"
+        style = "white"
+        if token in {"OK", "READY", "ALLOW"}:
+            style = "bold #00ff00"
+        elif token in {"WARN", "VIEW"}:
+            style = "bold #ffd700"
+        elif token in {"FAIL", "BLOCK"}:
+            style = "bold #ff3030"
+        elif token in {"UNKNOWN", "-"}:
+            style = "white"
+        return self._style_text(plain, style)
+
+    def _deploy_precheck_cells(self, target_name: str) -> tuple[str, str, str, str, str, str, str, str, str]:
+        readiness = self.deploy_readiness.get(target_name.lower())
+        mode_gate = "SERVICE" if self._target_requires_service(target_name) else "MAINT/SVC"
+        mode_state = self._deploy_mode_gate_state(target_name)
+        summary = self._deploy_readiness_summary(readiness)
+        return (
+            target_name,
+            readiness.status if readiness else "UNKNOWN",
+            mode_gate,
+            mode_state,
+            self._readiness_check_status(readiness, "SSH_KEY"),
+            self._readiness_check_status(readiness, "SSH_CONNECT"),
+            self._readiness_check_status(readiness, "PM2"),
+            self._readiness_check_status(readiness, "GIT_REMOTE"),
+            summary,
+        )
+
+    def _deploy_precheck_column_widths(
+        self,
+        rows: list[tuple[str, str, str, str, str, str, str, str, str]],
+    ) -> tuple[int, int, int, int, int, int, int, int, int]:
+        headers = (
+            "TARGET",
+            "READY",
+            "MODE-GATE",
+            "GATE-NOW",
+            "KEY",
+            "SSH",
+            "PM2",
+            "GIT",
+            "SUMMARY",
+        )
+        desired = [len(header) for header in headers]
+        for row in rows:
+            for idx in range(9):
+                desired[idx] = max(desired[idx], len(row[idx]))
+
+        available = max(72, self._width() - 2)
+        spaces = 8
+        total_desired = sum(desired) + spaces
+        if total_desired <= available:
+            return (
+                desired[0],
+                desired[1],
+                desired[2],
+                desired[3],
+                desired[4],
+                desired[5],
+                desired[6],
+                desired[7],
+                desired[8],
+            )
+
+        minimum = [12, 5, 8, 8, 3, 3, 3, 3, 16]
+        widths = desired[:]
+        overflow = total_desired - available
+        shrink_order = (8, 0, 2, 3, 1, 4, 5, 6, 7)
+
+        while overflow > 0:
+            changed = False
+            for idx in shrink_order:
+                if widths[idx] > minimum[idx]:
+                    widths[idx] -= 1
+                    overflow -= 1
+                    changed = True
+                    if overflow == 0:
+                        break
+            if not changed:
+                break
+
+        return (
+            widths[0],
+            widths[1],
+            widths[2],
+            widths[3],
+            widths[4],
+            widths[5],
+            widths[6],
+            widths[7],
+            widths[8],
+        )
+
+    def _deploy_precheck_header(
+        self,
+        widths: tuple[int, int, int, int, int, int, int, int, int],
+    ) -> str:
+        target_w, ready_w, gate_w, gate_now_w, key_w, ssh_w, pm2_w, git_w, summary_w = widths
+        return (
+            f"  {'TARGET':<{target_w}} {'READY':<{ready_w}} {'MODE-GATE':<{gate_w}} "
+            f"{'GATE-NOW':<{gate_now_w}} {'KEY':<{key_w}} {'SSH':<{ssh_w}} "
+            f"{'PM2':<{pm2_w}} {'GIT':<{git_w}} {'SUMMARY':<{summary_w}}"
+        )
+
+    def _deploy_precheck_row(
+        self,
+        row: tuple[str, str, str, str, str, str, str, str, str],
+        widths: tuple[int, int, int, int, int, int, int, int, int],
+    ) -> str:
+        target_w, ready_w, gate_w, gate_now_w, key_w, ssh_w, pm2_w, git_w, summary_w = widths
+        target_cell = f"{self._clip_cell(row[0], target_w):<{target_w}}"
+        ready_cell = self._deploy_status_token(row[1], ready_w)
+        mode_gate_cell = f"{self._clip_cell(row[2], gate_w):<{gate_w}}"
+        gate_now_cell = self._deploy_status_token(row[3], gate_now_w)
+        key_cell = self._deploy_status_token(row[4], key_w)
+        ssh_cell = self._deploy_status_token(row[5], ssh_w)
+        pm2_cell = self._deploy_status_token(row[6], pm2_w)
+        git_cell = self._deploy_status_token(row[7], git_w)
+        summary_plain = f"{self._clip_cell(row[8], summary_w):<{summary_w}}"
+        summary_cell = self._markup_safe(summary_plain)
+        return (
+            f"  {target_cell} {ready_cell} {mode_gate_cell} {gate_now_cell} "
+            f"{key_cell} {ssh_cell} {pm2_cell} {git_cell} {summary_cell}"
+        )
 
     def _profile_panel_lines(self) -> list[str]:
         state = "LOGGED ON" if self.authenticated else "NOT LOGGED ON"
@@ -1827,14 +2924,26 @@ class CashlyConsoleApp(App[None]):
     def _sync_command_label(self) -> None:
         if self.logon_stage != LogonFlowStage.NONE:
             return
+        if self.deploy_readiness_loading:
+            self._set_command_label(self._loading_command_label())
+            return
         self._set_command_label(self._default_command_label())
 
-    def _default_command_label(self) -> str:
+    def _command_prefix(self) -> str:
         if self.authenticated and self.selected_postauth_state == AppState.SERVICE:
-            return "Command (WRITE) ===>"
+            return "Command (WRITE)"
         if self.authenticated and self.selected_postauth_state == AppState.MAINT:
-            return "Command (MAINT) ===>"
-        return "Command ===>"
+            return "Command (MAINT)"
+        return "Command"
+
+    def _default_command_label(self) -> str:
+        return f"{self._command_prefix()} ===>"
+
+    def _loading_command_label(self) -> str:
+        frame = self.deploy_readiness_spinner_frames[
+            self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+        ]
+        return f"{self._command_prefix()} [PRECHECK {frame}] ===>"
 
     def _set_command_mode(
         self,
@@ -1997,10 +3106,14 @@ class CashlyConsoleApp(App[None]):
 
     @staticmethod
     def _style_text(text: str, style: str | None) -> str:
-        safe_text = text.replace("[", r"\[")
+        safe_text = CashlyConsoleApp._markup_safe(text)
         if not style:
             return safe_text
         return f"[{style}]{safe_text}[/]"
+
+    @staticmethod
+    def _markup_safe(text: str) -> str:
+        return text.replace("[", r"\[")
 
 
 def _tail_target_label(raw: str) -> str:
@@ -2012,21 +3125,97 @@ def _tail_target_label(raw: str) -> str:
 
 
 def _default_network_probe_targets() -> list[NetworkProbeTarget]:
-    return [
-        NetworkProbeTarget(name="n8n-server", url="https://n8n-aws.gocashly.io"),
-        NetworkProbeTarget(
-            name="cashly-app-development",
-            url="https://crm-development.gocashly.io",
-        ),
-        NetworkProbeTarget(
-            name="cashly-app-production",
-            url="https://crm.gocashly.io",
-        ),
-    ]
+    targets = _network_targets_from_compact_env()
+    if targets:
+        return targets
+    return _network_targets_from_indexed_env()
+
+
+def _network_targets_from_compact_env() -> list[NetworkProbeTarget]:
+    # Format:
+    #   CASHLYCTL_NETWORK_TARGETS=n8n-server=https://n8n-aws.gocashly.io,crm-dev=https://crm-development.gocashly.io
+    raw = _runtime_env("CASHLYCTL_NETWORK_TARGETS", "").strip()
+    if not raw:
+        return []
+    targets: list[NetworkProbeTarget] = []
+    for chunk in raw.split(","):
+        entry = chunk.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            continue
+        name, url = entry.split("=", 1)
+        probe_name = name.strip()
+        probe_url = url.strip()
+        if not probe_name or not probe_url:
+            continue
+        targets.append(NetworkProbeTarget(name=probe_name, url=probe_url))
+    return targets
+
+
+def _network_targets_from_indexed_env(limit: int = 32) -> list[NetworkProbeTarget]:
+    # Format:
+    #   CASHLYCTL_TARGET_1_NAME=n8n-server
+    #   CASHLYCTL_TARGET_1_URL=https://n8n-aws.gocashly.io
+    targets: list[NetworkProbeTarget] = []
+    for idx in range(1, limit + 1):
+        name = _runtime_env(f"CASHLYCTL_TARGET_{idx}_NAME", "").strip()
+        url = _runtime_env(f"CASHLYCTL_TARGET_{idx}_URL", "").strip()
+        if not name and not url:
+            continue
+        if not name or not url:
+            continue
+        targets.append(NetworkProbeTarget(name=name, url=url))
+    return targets
+
+
+_RUNTIME_ENV_CACHE: dict[str, str] | None = None
+
+
+def _runtime_env(key: str, default: str) -> str:
+    value = os.getenv(key, "").strip()
+    if value:
+        return value
+    env_data = _load_runtime_env_file()
+    file_value = env_data.get(key, "").strip()
+    if file_value:
+        return file_value
+    return default
+
+
+def _load_runtime_env_file(path: str = ".env") -> dict[str, str]:
+    global _RUNTIME_ENV_CACHE
+    if _RUNTIME_ENV_CACHE is not None:
+        return _RUNTIME_ENV_CACHE
+
+    data: dict[str, str] = {}
+    env_path = Path(path)
+    if not env_path.exists():
+        _RUNTIME_ENV_CACHE = data
+        return data
+
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        _RUNTIME_ENV_CACHE = data
+        return data
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env_key = key.strip()
+        env_value = value.strip().strip('"').strip("'")
+        if env_key and env_value:
+            data[env_key] = env_value
+
+    _RUNTIME_ENV_CACHE = data
+    return data
 
 
 def _network_probe_timeout_seconds() -> float:
-    raw = os.getenv("CASHLYCTL_PROBE_TIMEOUT_SEC", "3.0").strip()
+    raw = _runtime_env("CASHLYCTL_PROBE_TIMEOUT_SEC", "3.0").strip()
     try:
         value = float(raw)
     except ValueError:
@@ -2035,7 +3224,7 @@ def _network_probe_timeout_seconds() -> float:
 
 
 def _network_probe_latency_warn_ms() -> int:
-    raw = os.getenv("CASHLYCTL_PROBE_WARN_LATENCY_MS", "600").strip()
+    raw = _runtime_env("CASHLYCTL_PROBE_WARN_LATENCY_MS", "600").strip()
     try:
         value = int(raw)
     except ValueError:
@@ -2044,12 +3233,21 @@ def _network_probe_latency_warn_ms() -> int:
 
 
 def _service_idle_ttl_seconds() -> int:
-    raw = os.getenv("CASHLYCTL_SERVICE_IDLE_TTL_SEC", "900").strip()
+    raw = _runtime_env("CASHLYCTL_SERVICE_IDLE_TTL_SEC", "900").strip()
     try:
         value = int(raw)
     except ValueError:
         return 900
     return max(60, value)
+
+
+def _deploy_readiness_timeout_seconds() -> int:
+    raw = _runtime_env("CASHLYCTL_DEPLOY_PREFLIGHT_TIMEOUT_SEC", "10").strip()
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return 10
+    return max(4, min(value, 30))
 
 
 def _format_ttl(seconds: int) -> str:

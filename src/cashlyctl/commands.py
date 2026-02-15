@@ -19,6 +19,12 @@ class CommandKind(StrEnum):
     SET_ENV = "SET_ENV"
     SET_STATE = "SET_STATE"
     TAIL = "TAIL"
+    DETAIL = "DETAIL"
+    DEPLOY = "DEPLOY"
+    ROLLBACK = "ROLLBACK"
+    STATUS_DEPLOY = "STATUS_DEPLOY"
+    DIFF = "DIFF"
+    PLAN = "PLAN"
     SAVE_QRY = "SAVE_QRY"
     NUMBER = "NUMBER"
     RAW = "RAW"
@@ -69,6 +75,22 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand(kind=CommandKind.SET_STATE, raw=text, value=raw[6:].strip())
     if upper.startswith("TAIL "):
         return ParsedCommand(kind=CommandKind.TAIL, raw=text, value=raw[5:].strip())
+    if upper.startswith("DETAIL "):
+        return ParsedCommand(kind=CommandKind.DETAIL, raw=text, value=raw[7:].strip())
+    if upper.startswith("OPEN "):
+        return ParsedCommand(kind=CommandKind.DETAIL, raw=text, value=raw[5:].strip())
+    if upper.startswith("DEPLOY "):
+        return ParsedCommand(kind=CommandKind.DEPLOY, raw=text, value=raw[7:].strip())
+    if upper.startswith("ROLLBACK "):
+        return ParsedCommand(kind=CommandKind.ROLLBACK, raw=text, value=raw[9:].strip())
+    if upper.startswith("STATUS DEPLOY "):
+        return ParsedCommand(kind=CommandKind.STATUS_DEPLOY, raw=text, value=raw[14:].strip())
+    if upper.startswith("DIFF "):
+        return ParsedCommand(kind=CommandKind.DIFF, raw=text, value=raw[5:].strip())
+    if upper == "PLAN":
+        return ParsedCommand(kind=CommandKind.PLAN, raw=text, value="")
+    if upper.startswith("PLAN "):
+        return ParsedCommand(kind=CommandKind.PLAN, raw=text, value=raw[5:].strip())
     if upper.startswith("SAVE QRY "):
         return ParsedCommand(kind=CommandKind.SAVE_QRY, raw=text, value=raw[9:].strip())
     if raw.isdigit():

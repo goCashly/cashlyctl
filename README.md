@@ -2,8 +2,9 @@
 
 Terminal operations console and CLI for Cashly/DealSense deployments.
 
-This repository is the initial template for MVP-1:
+This repository is the initial template for MVP-0 ("Feel & Flow"):
 
+- z/OS-inspired panel structure with a command bar and PF key footer
 - Primary Option Menu and profile picker
 - Systems Status and Neo4j Console shell panels
 - Mocked health checks (OK/WARN/FAIL)
@@ -52,6 +53,48 @@ Command usage in console:
 
 - `LOGON admin cashly123`
 - `L admin cashly123`
+
+## Network / AWS Env Config
+
+`cashlyctl` now reads network target and AWS drilldown config from environment variables (including `.env` file values).
+
+Network target config:
+
+- Compact: `CASHLYCTL_NETWORK_TARGETS=name1=https://url1,name2=https://url2`
+- Indexed:
+- `CASHLYCTL_TARGET_1_NAME=...`
+- `CASHLYCTL_TARGET_1_URL=...`
+
+AWS drilldown config (optional):
+
+- `CASHLYCTL_AWS_REGION=us-east-1`
+- Per target overrides:
+- `CASHLYCTL_AWS_REGION_<TARGET_KEY>`
+- `CASHLYCTL_AWS_INSTANCE_ID_<TARGET_KEY>`
+- `CASHLYCTL_AWS_INSTANCE_NAME_<TARGET_KEY>`
+- `CASHLYCTL_AWS_TARGET_GROUP_<TARGET_KEY>`
+
+`<TARGET_KEY>` is target name uppercased with non-alphanumeric chars replaced by `_`.
+
+Deployment SSH runner config (Panel 7):
+
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_HOST`
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_USER`
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_PORT` (default `22`)
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_SSH_KEY_PATH` (optional local PEM/private key path for `ssh -i`)
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_APP_DIR`
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_PM2_PROCESS`
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_HEALTH_LOCAL`
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_HEALTH_PUBLIC`
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_DEFAULT_REF` (default `origin/main`)
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_NGINX_RELOAD` (`0/1`)
+- `CASHLYCTL_DEPLOY_<TARGET_KEY>_LAST_GOOD`
+- `CASHLYCTL_DEPLOY_PREFLIGHT_TIMEOUT_SEC` (default `10`)
+
+Notes:
+
+- `cashlyctl` only needs SSH access to the EC2 host.
+- Git deploy keys for app repos should remain on the EC2 host/user that runs `git fetch`.
 
 Optional ASCII logo settings via env vars:
 
