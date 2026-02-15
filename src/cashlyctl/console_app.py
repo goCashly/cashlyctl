@@ -39,6 +39,8 @@ from cashlyctl.deployments import (
     DeployReadinessResult,
     DeployRunResult,
     DeploySpec,
+    DeployStepResult,
+    fetch_deploy_preview_info,
     load_deploy_specs,
     probe_deploy_readiness,
     probe_deploy_target_readiness,
@@ -253,6 +255,27 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness_seq = 0
         self.deploy_history: list[dict[str, str]] = []
         self.last_deploy_report: DeployRunResult | None = None
+        self.deploy_state = "IDLE"
+        self.deploy_preview_target = ""
+        self.deploy_preview_revision = ""
+        self.deploy_preview_tag = ""
+        self.deploy_preview_branch = "-"
+        self.deploy_preview_current_sha = "-"
+        self.deploy_preview_target_sha = "-"
+        self.deploy_preview_last_deploy_time = "-"
+        self.deploy_preview_last_good = "-"
+        self.deploy_preview_preflight_summary = "UNKNOWN"
+        self.deploy_preview_required_confirm = ""
+        self.deploy_preview_confirmation_hint = ""
+        self.deploy_preview_info_error = ""
+        self.deploy_job_id_seq = 184
+        self.deploy_job_id = ""
+        self.deploy_job_running = False
+        self.deploy_job_target = ""
+        self.deploy_job_phase_seen: set[int] = set()
+        self.deploy_job_lines: list[str] = []
+        self.deploy_job_result: DeployRunResult | None = None
+        self.deploy_job_seq = 0
 
         self.panel1_mode = "STATUS"
         self.tail_target = "neo4j-dev"
@@ -327,7 +350,7 @@ class CashlyConsoleApp(App[None]):
         self._record_activity()
         self._set_job_status("SHOWING HELP...")
         self._set_status(
-            "HELP: LOGON, LOGOFF, SET STATE <observe|maint|service>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY, ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
+            "HELP: LOGON, LOGOFF, SET STATE <observe|maint|service>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY (preview), CONFIRM DEPLOY ..., ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
             "ok",
         )
         self._set_job_status("HELP READY")
@@ -541,6 +564,9 @@ class CashlyConsoleApp(App[None]):
         if parsed.kind == CommandKind.DIFF:
             self._handle_diff(parsed.value)
             return
+        if parsed.kind == CommandKind.CONFIRM_DEPLOY:
+            self._handle_confirm_deploy(parsed.raw.strip())
+            return
         if parsed.kind == CommandKind.DEPLOY:
             self._handle_deploy(parsed.value)
             return
@@ -745,6 +771,13 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness = {}
         self.deploy_readiness_last_refresh_at = "-"
         self.deploy_readiness_loading = False
+        self.deploy_state = "IDLE"
+        self.deploy_preview_target = ""
+        self.deploy_preview_required_confirm = ""
+        self.deploy_preview_confirmation_hint = ""
+        self.deploy_job_running = False
+        self.deploy_job_lines = []
+        self.deploy_job_result = None
 
         self._set_job_status("SESSION PREAUTH", render_now=False)
         self._render()
@@ -930,11 +963,7 @@ class CashlyConsoleApp(App[None]):
             "3": "n8n-server",
         }
         if value in mapping:
-            target = mapping[value]
-            if self.selected_postauth_state == AppState.OBSERVE:
-                self._handle_plan(f"show {target}")
-            else:
-                self._handle_deploy(target)
+            self._open_deploy_preview(mapping[value])
             return
         if value == "4":
             self._set_status("ROLLBACK USAGE: ROLLBACK <target> --to <ref|last-good>", "warn")
@@ -948,6 +977,256 @@ class CashlyConsoleApp(App[None]):
             self._set_status("RELEASE MANAGEMENT: COMING LATER", "warn")
             return
         self._set_status("INVALID DEPLOYMENTS OPTION. USE 1..6", "warn")
+
+    def _open_deploy_preview(
+        self,
+        target_value: str,
+        revision: str = "",
+        tag: str = "",
+    ) -> None:
+        target = self._normalize_deploy_target(target_value.strip().lower())
+        if not target:
+            self._set_status("UNKNOWN DEPLOY TARGET", "error")
+            return
+
+        spec = self._deploy_spec_for_target(target)
+        readiness = probe_deploy_target_readiness(
+            target,
+            spec,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+        self.deploy_readiness[target.lower()] = readiness
+        self.deploy_readiness_last_refresh_at = readiness.checked_at
+
+        branch = self._deploy_branch_from_ref(spec.default_ref if spec else "")
+        preview = fetch_deploy_preview_info(
+            spec,
+            branch=branch,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+
+        self.deploy_preview_target = target
+        self.deploy_preview_revision = revision.strip()
+        self.deploy_preview_tag = tag.strip()
+        self.deploy_preview_branch = preview.branch
+        self.deploy_preview_current_sha = preview.current_sha
+        self.deploy_preview_target_sha = preview.target_sha
+        self.deploy_preview_info_error = preview.error
+        self.deploy_preview_last_deploy_time = (
+            (self._latest_deploy_record(target) or {}).get("finished_at", "-")
+        )
+        self.deploy_preview_last_good = (spec.last_good_ref.strip() if spec else "") or "-"
+        readiness_detail = self._deploy_readiness_summary(readiness)
+        self.deploy_preview_preflight_summary = readiness_detail
+        self.deploy_preview_required_confirm = self._build_deploy_confirm_phrase(
+            target,
+            preview.target_sha,
+            preview.branch,
+        )
+        self.deploy_preview_confirmation_hint = (
+            f"Type exactly: {self.deploy_preview_required_confirm}"
+        )
+        self.deploy_state = "PREVIEW"
+        self.deploy_job_running = False
+        self.deploy_job_result = None
+        self.deploy_job_lines = []
+
+        self._goto_panel("7A")
+        self._set_job_status(f"DEPLOY PREVIEW READY: {self._deploy_target_code(target)}", render_now=False)
+        self._set_status("CONFIRMATION REQUIRED. NOTHING EXECUTED YET.", "warn")
+        self._render()
+
+    def _build_deploy_confirm_phrase(
+        self,
+        target: str,
+        target_sha: str,
+        branch: str,
+    ) -> str:
+        code = self._deploy_target_code(target)
+        if self._target_requires_service(target):
+            stamp = datetime.now().strftime("%H:%M")
+            return f"CONFIRM DEPLOY {code} IN SERVICE MODE AT {stamp}"
+
+        revision_hint = self.deploy_preview_revision or self.deploy_preview_tag
+        if not revision_hint:
+            revision_hint = target_sha if target_sha != "-" else branch
+        return f"CONFIRM DEPLOY {code} REV {revision_hint}"
+
+    def _deploy_branch_from_ref(self, ref: str) -> str:
+        value = (ref or "").strip()
+        if not value:
+            return "main"
+        if value.startswith("origin/"):
+            return value[7:] or "main"
+        if value.startswith("refs/heads/"):
+            return value[11:] or "main"
+        return value
+
+    def _deploy_target_code(self, target: str) -> str:
+        normalized = target.strip().lower()
+        mapping = {
+            "cashly-app-development": "CRM-DEV",
+            "cashly-app-production": "CRM-PROD",
+            "n8n-server": "N8N",
+        }
+        return mapping.get(normalized, normalized.upper())
+
+    def _handle_confirm_deploy(self, confirm_text: str) -> None:
+        if self.panel != "7A" or self.deploy_state != "PREVIEW":
+            self._set_status("CONFIRM DEPLOY IS ONLY VALID IN PANEL 7A PREVIEW", "warn")
+            return
+        expected = self.deploy_preview_required_confirm.strip()
+        if not expected:
+            self._set_status("NO DEPLOY PREVIEW CONFIRMATION PENDING", "warn")
+            return
+        provided = confirm_text.strip()
+        if provided != expected:
+            self._set_status("CONFIRMATION MISMATCH. TYPE THE EXACT STRING SHOWN IN PANEL 7A.", "error")
+            return
+
+        target = self.deploy_preview_target
+        if not target:
+            self._set_status("DEPLOY PREVIEW TARGET MISSING", "error")
+            return
+        if not self._mode_allows_write(target):
+            return
+
+        spec = self._deploy_spec_for_target(target)
+        if not spec:
+            self._set_job_status("DEPLOY BLOCKED")
+            self._set_status(f"NO DEPLOY SSH CONFIG FOR {target}", "error")
+            return
+
+        readiness = probe_deploy_target_readiness(
+            target,
+            spec,
+            timeout_sec=self.deploy_readiness_timeout_seconds,
+        )
+        self.deploy_readiness[target.lower()] = readiness
+        self.deploy_readiness_last_refresh_at = readiness.checked_at
+        if readiness.status == "FAIL":
+            fail_step = next((step for step in readiness.checks if step.status == "FAIL"), None)
+            reason = fail_step.name if fail_step else "PRECHECK"
+            self._set_job_status("DEPLOY BLOCKED")
+            self._set_status(f"DEPLOY BLOCKED: {target} not ready ({reason})", "error")
+            self._render()
+            return
+
+        self.deploy_job_seq += 1
+        seq = self.deploy_job_seq
+        code = self._deploy_target_code(target).replace("-", "_")
+        self.deploy_job_id = f"DEPLOY_{code} #{self.deploy_job_id_seq}"
+        self.deploy_job_id_seq += 1
+        self.deploy_job_target = target
+        self.deploy_job_running = True
+        self.deploy_state = "EXECUTING"
+        self.deploy_job_phase_seen = set()
+        self.deploy_job_result = None
+        self.deploy_job_lines = [
+            f"JOB: {self.deploy_job_id}",
+            f"TARGET: {target}  BRANCH: {self.deploy_preview_branch}  REF: {self.deploy_preview_revision or self.deploy_preview_target_sha or self.deploy_preview_branch}",
+            "",
+        ]
+
+        self._goto_panel("7B")
+        self._set_job_status(f"DEPLOY EXECUTING: {self._deploy_target_code(target)}", render_now=False)
+        self._set_status("DEPLOY JOB SUBMITTED", "warn")
+        self._render()
+        self.refresh()
+
+        threading.Thread(
+            target=self._deploy_job_worker,
+            args=(
+                seq,
+                target,
+                spec,
+                self.deploy_preview_revision,
+                self.deploy_preview_tag,
+            ),
+            daemon=True,
+        ).start()
+
+    def _deploy_job_worker(
+        self,
+        seq: int,
+        target: str,
+        spec: DeploySpec,
+        revision: str,
+        tag: str,
+    ) -> None:
+        def on_step(step: DeployStepResult) -> None:
+            self.call_from_thread(self._append_deploy_job_step, seq, step)
+
+        report = run_deploy_via_ssh(
+            spec,
+            revision=revision,
+            tag=tag,
+            on_step=on_step,
+        )
+        self.call_from_thread(self._finish_deploy_job, seq, target, report)
+
+    def _append_deploy_job_step(self, seq: int, step: DeployStepResult) -> None:
+        if seq != self.deploy_job_seq:
+            return
+        phase_idx, phase_label = self._deploy_phase(step.name)
+        if phase_idx not in self.deploy_job_phase_seen:
+            self.deploy_job_phase_seen.add(phase_idx)
+            self.deploy_job_lines.append(
+                f"STEP {phase_idx}/7 {phase_label}... {step.status}"
+            )
+        elif step.status in {"FAIL", "WARN"}:
+            detail = step.detail.replace("\n", " ")
+            self.deploy_job_lines.append(f"  {step.name}: {step.status} {detail[:140]}")
+        self._render()
+        self.refresh()
+
+    def _finish_deploy_job(self, seq: int, target: str, report: DeployRunResult) -> None:
+        if seq != self.deploy_job_seq:
+            return
+        self.deploy_job_running = False
+        self.deploy_job_result = report
+        self.last_deploy_report = report
+        self._record_deploy_report(report)
+
+        final_step_status = "OK" if report.status == "OK" else ("WARN" if report.status == "WARN" else "FAIL")
+        self.deploy_job_lines.append(
+            f"STEP 7/7 Mark last-known-good... {final_step_status}"
+        )
+
+        if report.status == "OK":
+            self.deploy_state = "COMPLETE"
+            self._set_job_status(f"DEPLOY COMPLETE: {self._deploy_target_code(target)}", render_now=False)
+            self._set_status(f"DEPLOY COMPLETE: {target} ref={report.ref}", "ok")
+        elif report.status == "WARN":
+            self.deploy_state = "COMPLETE"
+            self._set_job_status(f"DEPLOY COMPLETE WITH WARN: {self._deploy_target_code(target)}", render_now=False)
+            self._set_status(f"DEPLOY COMPLETE WITH WARN: {target}", "warn")
+        else:
+            self.deploy_state = "FAILED"
+            self._set_job_status(f"DEPLOY FAILED: {self._deploy_target_code(target)}", render_now=False)
+            self._set_status(
+                f"DEPLOY FAILED: {target}. CONSIDER ROLLBACK {target} --to last-good",
+                "error",
+            )
+
+        self._render()
+        self.refresh()
+
+    def _deploy_phase(self, step_name: str) -> tuple[int, str]:
+        name = step_name.upper()
+        if name.startswith("PREFLIGHT"):
+            return 1, "Validate mode + scope"
+        if name in {"FETCH", "CHECKOUT"}:
+            return 2, "Git fetch + checkout"
+        if name == "NPM_CI":
+            return 3, "npm ci"
+        if name == "BUILD":
+            return 4, "npm run build"
+        if name.startswith("PM2") or name.startswith("NGINX"):
+            return 5, "pm2 reload"
+        if name.startswith("VERIFY"):
+            return 6, "Health check (local + public)"
+        return 6, step_name
 
     def _handle_plan(self, plan_args: str) -> None:
         raw = plan_args.strip()
@@ -1042,48 +1321,8 @@ class CashlyConsoleApp(App[None]):
         if not target:
             self._set_status("UNKNOWN DEPLOY TARGET", "error")
             return
-        if not self._mode_allows_write(target):
-            return
 
-        spec = self._deploy_spec_for_target(target)
-        if not spec:
-            self._set_status(f"NO DEPLOY SSH CONFIG FOR {target}", "error")
-            self._set_job_status("DEPLOY FAILED")
-            return
-
-        readiness = probe_deploy_target_readiness(
-            target,
-            spec,
-            timeout_sec=self.deploy_readiness_timeout_seconds,
-        )
-        self.deploy_readiness[target.lower()] = readiness
-        self.deploy_readiness_last_refresh_at = readiness.checked_at
-        if readiness.status == "FAIL":
-            fail_step = next((step for step in readiness.checks if step.status == "FAIL"), None)
-            reason = fail_step.name if fail_step else "PRECHECK"
-            self._set_job_status("DEPLOY BLOCKED")
-            self._set_status(f"DEPLOY BLOCKED: {target} not ready ({reason})", "error")
-            self._render()
-            return
-
-        if readiness.status == "WARN":
-            self._set_status(
-                f"DEPLOY PRECHECK WARNINGS: {target} (continuing)",
-                "warn",
-            )
-
-        self._set_job_status(f"DEPLOY RUNNING: {target.upper()}...", render_now=False)
-        self._render()
-        report = run_deploy_via_ssh(spec, revision=revision, tag=tag)
-        self.last_deploy_report = report
-        self._record_deploy_report(report)
-        self._set_job_status(f"DEPLOY {report.status}: {target.upper()}", render_now=False)
-        level = "ok" if report.status == "OK" else ("warn" if report.status == "WARN" else "error")
-        self._set_status(
-            f"DEPLOY {target} {report.status} ref={report.ref} finished={report.finished_at}",
-            level,
-        )
-        self._render()
+        self._open_deploy_preview(target, revision=revision, tag=tag)
 
     def _handle_rollback(self, rollback_args: str) -> None:
         target, to_ref, error = self._parse_rollback_args(rollback_args)
@@ -1421,6 +1660,13 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness = {}
         self.deploy_readiness_last_refresh_at = "-"
         self.deploy_readiness_loading = False
+        self.deploy_state = "IDLE"
+        self.deploy_preview_target = ""
+        self.deploy_preview_required_confirm = ""
+        self.deploy_preview_confirmation_hint = ""
+        self.deploy_job_running = False
+        self.deploy_job_lines = []
+        self.deploy_job_result = None
         self._render()
 
     def _goto_panel(self, panel: str) -> None:
@@ -1674,6 +1920,10 @@ class CashlyConsoleApp(App[None]):
             lines.extend(self._panel4_lines())
         elif self.panel == "7":
             lines.extend(self._panel7_deployments_lines())
+        elif self.panel == "7A":
+            lines.extend(self._panel7a_deploy_preview_lines())
+        elif self.panel == "7B":
+            lines.extend(self._panel7b_deploy_job_lines())
         elif self.panel == "1":
             lines.extend(self._panel1_lines())
         elif self.panel == "I":
@@ -2542,17 +2792,17 @@ class CashlyConsoleApp(App[None]):
             )
         lines.extend(
             [
-                "  1  Deploy CRM Dev",
-                "  2  Deploy CRM Prod",
-                "  3  Deploy n8n",
+                "  1  Initialize Deployment CRM Dev",
+                "  2  Initialize Deployment CRM Prod",
+                "  3  Initialize Deployment n8n",
                 "  4  Rollback",
                 "  5  Deploy History",
                 "  6  Release Management (later)",
                 "",
                 "COMMANDS:",
-                "  DEPLOY crm-dev",
-                "  DEPLOY crm-prod REV <sha>",
-                "  DEPLOY crm-prod TAG <tag>",
+                "  DEPLOY crm-dev                 (opens 7A preview, does not execute)",
+                "  DEPLOY crm-prod REV <sha>      (opens 7A preview with revision)",
+                "  DEPLOY crm-prod TAG <tag>      (opens 7A preview with tag)",
                 "  ROLLBACK crm-prod --to last-good",
                 "  STATUS DEPLOY crm-prod",
                 "  DIFF crm-prod --current --target <sha>",
@@ -2621,6 +2871,112 @@ class CashlyConsoleApp(App[None]):
                 lines.append(f"  {step.name:<18} [{step.status}] {step.detail[:120]}")
             lines.append("")
         return lines
+
+    def _panel7a_deploy_preview_lines(self) -> list[str]:
+        state_mode = self.selected_postauth_state.value
+        target = self.deploy_preview_target or "-"
+        target_code = self._deploy_target_code(target) if target != "-" else "-"
+        requested_ref = self._deploy_preview_requested_ref()
+        readiness = self.deploy_readiness.get(target.lower()) if target != "-" else None
+        preflight_status = readiness.status if readiness else "UNKNOWN"
+
+        lines = [
+            self._line_lr(f"PANEL: 7A  DEPLOY {target_code} (PREVIEW)", f"MODE: {state_mode}"),
+            self._rule("="),
+            "",
+            f"DEPLOY STATE: {self.deploy_state}",
+            f"Current deployed SHA: {self.deploy_preview_current_sha}",
+            f"Target SHA (default latest): {self.deploy_preview_target_sha}",
+            f"Requested ref: {requested_ref}",
+            f"Branch: {self.deploy_preview_branch}",
+            f"Last deploy time: {self.deploy_preview_last_deploy_time}",
+            f"Last known good SHA: {self.deploy_preview_last_good}",
+            f"Preflight status summary: {self._deploy_status_token(preflight_status, len(preflight_status))}  {self._markup_safe(self.deploy_preview_preflight_summary)}",
+            "",
+        ]
+        if self.deploy_preview_info_error:
+            lines.append(
+                self._style_text(
+                    f"PREVIEW NOTE: {self.deploy_preview_info_error}",
+                    "bold #ffd700",
+                )
+            )
+            lines.append("")
+
+        lines.extend(
+            [
+                "DEPLOY PLAN:",
+                "  1. Validate mode + scope",
+                "  2. Git fetch + checkout <sha>",
+                "  3. npm ci",
+                "  4. npm run build",
+                "  5. pm2 reload",
+                "  6. Health check (local + public)",
+                "  7. Mark last-known-good",
+                "",
+                "CONFIRMATION REQUIRED",
+                f"  {self.deploy_preview_required_confirm}",
+                "",
+                "NOTHING HAS EXECUTED YET.",
+                "Type the exact confirmation string above to submit the job.",
+                "",
+            ]
+        )
+        return lines
+
+    def _panel7b_deploy_job_lines(self) -> list[str]:
+        state_mode = self.selected_postauth_state.value
+        target = self.deploy_job_target or self.deploy_preview_target
+        target_code = self._deploy_target_code(target) if target else "-"
+        lines = [
+            self._line_lr(f"PANEL: 7B  DEPLOY JOB ({target_code})", f"MODE: {state_mode}"),
+            self._rule("="),
+            "",
+            f"DEPLOY STATE: {self.deploy_state}",
+        ]
+        if self.deploy_job_id:
+            lines.append(f"JOB: {self.deploy_job_id}")
+        if target:
+            lines.append(f"TARGET: {target}")
+        if self.deploy_job_running:
+            lines.append(self._style_text("STATUS: RUNNING", "bold #ffd700"))
+        elif self.deploy_job_result:
+            result_style = (
+                "bold #00ff00"
+                if self.deploy_job_result.status == "OK"
+                else ("bold #ffd700" if self.deploy_job_result.status == "WARN" else "bold #ff3030")
+            )
+            lines.append(self._style_text(f"STATUS: {self.deploy_job_result.status}", result_style))
+        lines.extend(["", "JOB OUTPUT:", self._rule("-")])
+        if not self.deploy_job_lines:
+            lines.append("  Waiting for job output...")
+        else:
+            for item in self.deploy_job_lines[-24:]:
+                lines.append(f"  {item}")
+        if self.deploy_job_result and self.deploy_job_result.status != "OK":
+            target_for_hint = self.deploy_job_target or self.deploy_preview_target
+            lines.extend(
+                [
+                    "",
+                    self._style_text(
+                        f"Rollback hint: ROLLBACK {target_for_hint} --to last-good",
+                        "bold #ffd700",
+                    ),
+                ]
+            )
+        lines.append("")
+        return lines
+
+    def _deploy_preview_requested_ref(self) -> str:
+        if self.deploy_preview_revision:
+            return f"REV {self.deploy_preview_revision}"
+        if self.deploy_preview_tag:
+            return f"TAG {self.deploy_preview_tag}"
+        if self.deploy_preview_target_sha and self.deploy_preview_target_sha != "-":
+            return f"LATEST ({self.deploy_preview_target_sha})"
+        if self.deploy_preview_branch and self.deploy_preview_branch != "-":
+            return f"LATEST ({self.deploy_preview_branch})"
+        return "-"
 
     def _deploy_mode_gate_state(self, target: str) -> str:
         if self.selected_postauth_state == AppState.OBSERVE:

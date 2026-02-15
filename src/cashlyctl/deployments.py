@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import shlex
 import subprocess
+from typing import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,14 @@ class DeployReadinessResult:
     status: str
     checked_at: str
     checks: list[DeployStepResult] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class DeployPreviewInfo:
+    branch: str
+    current_sha: str
+    target_sha: str
+    error: str = ""
 
 
 def load_deploy_specs(target_names: list[str]) -> dict[str, DeploySpec]:
@@ -330,22 +339,73 @@ def probe_deploy_target_readiness(
     )
 
 
+def fetch_deploy_preview_info(
+    spec: DeploySpec | None,
+    branch: str,
+    timeout_sec: int = 10,
+) -> DeployPreviewInfo:
+    safe_branch = (branch or "main").strip()
+    if not spec:
+        return DeployPreviewInfo(branch=safe_branch, current_sha="-", target_sha="-", error="Missing deploy spec")
+
+    current_sha = "-"
+    target_sha = "-"
+    errors: list[str] = []
+
+    ok_current, out_current = _ssh_exec(
+        spec,
+        f"cd {q(spec.app_dir)} && git rev-parse --short HEAD",
+        timeout_sec,
+    )
+    if ok_current and out_current:
+        current_sha = out_current.splitlines()[-1].strip()[:12]
+    else:
+        errors.append("unable to resolve current SHA")
+
+    ok_target, out_target = _ssh_exec(
+        spec,
+        f"cd {q(spec.app_dir)} && git ls-remote --heads origin {q(safe_branch)}",
+        timeout_sec,
+    )
+    if ok_target and out_target:
+        first = out_target.splitlines()[0].strip()
+        if first:
+            target_sha = first.split()[0][:12]
+    else:
+        errors.append("unable to resolve target SHA")
+
+    return DeployPreviewInfo(
+        branch=safe_branch,
+        current_sha=current_sha,
+        target_sha=target_sha,
+        error="; ".join(errors),
+    )
+
+
 def run_deploy_via_ssh(
     spec: DeploySpec,
     revision: str = "",
     tag: str = "",
     timeout_sec: int = 120,
+    on_step: Callable[[DeployStepResult], None] | None = None,
 ) -> DeployRunResult:
     ref = revision.strip() or (tag.strip() and f"tag:{tag.strip()}") or spec.default_ref
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     steps: list[DeployStepResult] = []
 
-    ok, detail = _preflight(spec, timeout_sec)
+    ok, detail = _preflight(spec, timeout_sec, on_step=on_step)
     steps.extend(detail)
     if not ok:
         return _finish("DEPLOY", spec.target, "FAIL", started, ref, steps)
 
-    if not _step_exec(steps, spec, "FETCH", f"cd {q(spec.app_dir)} && git fetch --all", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "FETCH",
+        f"cd {q(spec.app_dir)} && git fetch --all",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return _finish("DEPLOY", spec.target, "FAIL", started, ref, steps)
 
     checkout_ref = revision.strip() or (f"tags/{tag.strip()}" if tag.strip() else spec.default_ref)
@@ -355,22 +415,53 @@ def run_deploy_via_ssh(
         "CHECKOUT",
         f"cd {q(spec.app_dir)} && git checkout {q(checkout_ref)}",
         timeout_sec,
+        on_step=on_step,
     ):
         return _finish("DEPLOY", spec.target, "FAIL", started, ref, steps)
 
-    if not _step_exec(steps, spec, "NPM_CI", f"cd {q(spec.app_dir)} && npm ci", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "NPM_CI",
+        f"cd {q(spec.app_dir)} && npm ci",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return _finish("DEPLOY", spec.target, "FAIL", started, ref, steps)
-    if not _step_exec(steps, spec, "BUILD", f"cd {q(spec.app_dir)} && npm run build", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "BUILD",
+        f"cd {q(spec.app_dir)} && npm run build",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return _finish("DEPLOY", spec.target, "FAIL", started, ref, steps)
 
-    if not _reload_pm2(steps, spec, timeout_sec):
+    if not _reload_pm2(steps, spec, timeout_sec, on_step=on_step):
         return _finish("DEPLOY", spec.target, "FAIL", started, ref, steps)
 
     if spec.allow_nginx_reload:
-        _step_exec(steps, spec, "NGINX_TEST", "nginx -t", timeout_sec, required=False)
-        _step_exec(steps, spec, "NGINX_RELOAD", "nginx -s reload", timeout_sec, required=False)
+        _step_exec(
+            steps,
+            spec,
+            "NGINX_TEST",
+            "nginx -t",
+            timeout_sec,
+            required=False,
+            on_step=on_step,
+        )
+        _step_exec(
+            steps,
+            spec,
+            "NGINX_RELOAD",
+            "nginx -s reload",
+            timeout_sec,
+            required=False,
+            on_step=on_step,
+        )
 
-    _verify_health(steps, spec, timeout_sec)
+    _verify_health(steps, spec, timeout_sec, on_step=on_step)
     status = _aggregate_status(steps)
     return _finish("DEPLOY", spec.target, status, started, ref, steps)
 
@@ -379,6 +470,7 @@ def run_rollback_via_ssh(
     spec: DeploySpec,
     to_ref: str,
     timeout_sec: int = 120,
+    on_step: Callable[[DeployStepResult], None] | None = None,
 ) -> DeployRunResult:
     rollback_ref = to_ref.strip() or spec.last_good_ref.strip()
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -396,12 +488,19 @@ def run_rollback_via_ssh(
         )
         return _finish("ROLLBACK", spec.target, "FAIL", started, "last-good", steps)
 
-    ok, detail = _preflight(spec, timeout_sec)
+    ok, detail = _preflight(spec, timeout_sec, on_step=on_step)
     steps.extend(detail)
     if not ok:
         return _finish("ROLLBACK", spec.target, "FAIL", started, rollback_ref, steps)
 
-    if not _step_exec(steps, spec, "FETCH", f"cd {q(spec.app_dir)} && git fetch --all", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "FETCH",
+        f"cd {q(spec.app_dir)} && git fetch --all",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return _finish("ROLLBACK", spec.target, "FAIL", started, rollback_ref, steps)
     if not _step_exec(
         steps,
@@ -409,23 +508,42 @@ def run_rollback_via_ssh(
         "CHECKOUT",
         f"cd {q(spec.app_dir)} && git checkout {q(rollback_ref)}",
         timeout_sec,
+        on_step=on_step,
     ):
         return _finish("ROLLBACK", spec.target, "FAIL", started, rollback_ref, steps)
 
-    if not _step_exec(steps, spec, "NPM_CI", f"cd {q(spec.app_dir)} && npm ci", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "NPM_CI",
+        f"cd {q(spec.app_dir)} && npm ci",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return _finish("ROLLBACK", spec.target, "FAIL", started, rollback_ref, steps)
-    if not _step_exec(steps, spec, "BUILD", f"cd {q(spec.app_dir)} && npm run build", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "BUILD",
+        f"cd {q(spec.app_dir)} && npm run build",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return _finish("ROLLBACK", spec.target, "FAIL", started, rollback_ref, steps)
 
-    if not _reload_pm2(steps, spec, timeout_sec):
+    if not _reload_pm2(steps, spec, timeout_sec, on_step=on_step):
         return _finish("ROLLBACK", spec.target, "FAIL", started, rollback_ref, steps)
 
-    _verify_health(steps, spec, timeout_sec)
+    _verify_health(steps, spec, timeout_sec, on_step=on_step)
     status = _aggregate_status(steps)
     return _finish("ROLLBACK", spec.target, status, started, rollback_ref, steps)
 
 
-def _preflight(spec: DeploySpec, timeout_sec: int) -> tuple[bool, list[DeployStepResult]]:
+def _preflight(
+    spec: DeploySpec,
+    timeout_sec: int,
+    on_step: Callable[[DeployStepResult], None] | None = None,
+) -> tuple[bool, list[DeployStepResult]]:
     steps: list[DeployStepResult] = []
     if not spec.host or not spec.user:
         steps.append(DeployStepResult("CONFIG", "FAIL", "Missing SSH host/user config"))
@@ -439,7 +557,14 @@ def _preflight(spec: DeploySpec, timeout_sec: int) -> tuple[bool, list[DeploySte
             )
         )
         return False, steps
-    if not _step_exec(steps, spec, "PREFLIGHT_DIR", f"test -d {q(spec.app_dir)}", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "PREFLIGHT_DIR",
+        f"test -d {q(spec.app_dir)}",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return False, steps
     _step_exec(
         steps,
@@ -448,12 +573,35 @@ def _preflight(spec: DeploySpec, timeout_sec: int) -> tuple[bool, list[DeploySte
         f"cd {q(spec.app_dir)} && git remote -v",
         timeout_sec,
         required=False,
+        on_step=on_step,
     )
-    if not _step_exec(steps, spec, "PREFLIGHT_DISK", f"df -h {q(spec.app_dir)}", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "PREFLIGHT_DISK",
+        f"df -h {q(spec.app_dir)}",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return False, steps
-    if not _step_exec(steps, spec, "PREFLIGHT_PM2", "pm2 ping", timeout_sec):
+    if not _step_exec(
+        steps,
+        spec,
+        "PREFLIGHT_PM2",
+        "pm2 ping",
+        timeout_sec,
+        on_step=on_step,
+    ):
         return False, steps
-    _step_exec(steps, spec, "PREFLIGHT_PORTS", "ss -ltn | head -n 20", timeout_sec, required=False)
+    _step_exec(
+        steps,
+        spec,
+        "PREFLIGHT_PORTS",
+        "ss -ltn | head -n 20",
+        timeout_sec,
+        required=False,
+        on_step=on_step,
+    )
     return True, steps
 
 
@@ -475,7 +623,12 @@ def _readiness_remote_check(
     return not required
 
 
-def _reload_pm2(steps: list[DeployStepResult], spec: DeploySpec, timeout_sec: int) -> bool:
+def _reload_pm2(
+    steps: list[DeployStepResult],
+    spec: DeploySpec,
+    timeout_sec: int,
+    on_step: Callable[[DeployStepResult], None] | None = None,
+) -> bool:
     if _step_exec(
         steps,
         spec,
@@ -483,6 +636,7 @@ def _reload_pm2(steps: list[DeployStepResult], spec: DeploySpec, timeout_sec: in
         f"pm2 reload {q(spec.pm2_process)}",
         timeout_sec,
         required=False,
+        on_step=on_step,
     ):
         return True
     return _step_exec(
@@ -491,10 +645,16 @@ def _reload_pm2(steps: list[DeployStepResult], spec: DeploySpec, timeout_sec: in
         "PM2_RESTART",
         f"pm2 restart {q(spec.pm2_process)}",
         timeout_sec,
+        on_step=on_step,
     )
 
 
-def _verify_health(steps: list[DeployStepResult], spec: DeploySpec, timeout_sec: int) -> None:
+def _verify_health(
+    steps: list[DeployStepResult],
+    spec: DeploySpec,
+    timeout_sec: int,
+    on_step: Callable[[DeployStepResult], None] | None = None,
+) -> None:
     if spec.health_local:
         _step_exec(
             steps,
@@ -503,6 +663,7 @@ def _verify_health(steps: list[DeployStepResult], spec: DeploySpec, timeout_sec:
             f"curl -fsS -m 10 {q(spec.health_local)}",
             timeout_sec,
             required=False,
+            on_step=on_step,
         )
     if spec.health_public:
         _step_exec(
@@ -512,6 +673,7 @@ def _verify_health(steps: list[DeployStepResult], spec: DeploySpec, timeout_sec:
             f"curl -fsS -m 10 {q(spec.health_public)}",
             timeout_sec,
             required=False,
+            on_step=on_step,
         )
 
 
@@ -522,13 +684,20 @@ def _step_exec(
     command: str,
     timeout_sec: int,
     required: bool = True,
+    on_step: Callable[[DeployStepResult], None] | None = None,
 ) -> bool:
     ok, out = _ssh_exec(spec, command, timeout_sec)
     if ok:
-        steps.append(DeployStepResult(step_name, "OK", out))
+        result = DeployStepResult(step_name, "OK", out)
+        steps.append(result)
+        if on_step:
+            on_step(result)
         return True
     status = "FAIL" if required else "WARN"
-    steps.append(DeployStepResult(step_name, status, out))
+    result = DeployStepResult(step_name, status, out)
+    steps.append(result)
+    if on_step:
+        on_step(result)
     return not required
 
 

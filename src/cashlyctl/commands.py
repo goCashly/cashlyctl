@@ -25,6 +25,7 @@ class CommandKind(StrEnum):
     STATUS_DEPLOY = "STATUS_DEPLOY"
     DIFF = "DIFF"
     PLAN = "PLAN"
+    CONFIRM_DEPLOY = "CONFIRM_DEPLOY"
     SAVE_QRY = "SAVE_QRY"
     NUMBER = "NUMBER"
     RAW = "RAW"
@@ -91,6 +92,8 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand(kind=CommandKind.PLAN, raw=text, value="")
     if upper.startswith("PLAN "):
         return ParsedCommand(kind=CommandKind.PLAN, raw=text, value=raw[5:].strip())
+    if upper.startswith("CONFIRM DEPLOY "):
+        return ParsedCommand(kind=CommandKind.CONFIRM_DEPLOY, raw=text, value=raw[15:].strip())
     if upper.startswith("SAVE QRY "):
         return ParsedCommand(kind=CommandKind.SAVE_QRY, raw=text, value=raw[9:].strip())
     if raw.isdigit():
