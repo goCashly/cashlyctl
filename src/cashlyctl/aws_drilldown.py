@@ -8,11 +8,12 @@ from urllib.parse import urlparse
 
 try:
     import boto3
-    from botocore.exceptions import BotoCoreError, ClientError
+    from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound
 except Exception:  # pragma: no cover - optional dependency at runtime
     boto3 = None  # type: ignore[assignment]
     BotoCoreError = Exception  # type: ignore[assignment]
     ClientError = Exception  # type: ignore[assignment]
+    ProfileNotFound = Exception  # type: ignore[assignment]
 
 
 @dataclass(slots=True)
@@ -21,6 +22,7 @@ class AwsInstanceDetail:
     target_url: str
     region: str
     hostname: str
+    aws_profile: str = "-"
     identity_name: str = "-"
     instance_id: str = "-"
     state: str = "-"
@@ -51,21 +53,30 @@ def aws_sdk_available() -> bool:
 def fetch_instance_detail(target_name: str, target_url: str) -> AwsInstanceDetail:
     hostname = urlparse(target_url).hostname or "-"
     region = _resolve_region(target_name)
+    profile_name = _resolve_profile(target_name)
     detail = AwsInstanceDetail(
         target_name=target_name,
         target_url=target_url,
         region=region,
         hostname=hostname,
+        aws_profile=profile_name or "default-chain",
     )
     if boto3 is None:
         detail.error = "boto3 not installed"
         return detail
 
     try:
-        session = boto3.Session(region_name=region)
+        session = boto3.Session(
+            profile_name=profile_name or None,
+            region_name=region,
+        )
         ec2 = session.client("ec2")
         elbv2 = session.client("elbv2")
         cloudwatch = session.client("cloudwatch")
+    except ProfileNotFound:
+        detail.error = f"AWS profile not found: {profile_name}"
+        detail.source_note = "Set CASHLYCTL_AWS_PROFILE_<TARGET> to an existing AWS CLI profile."
+        return detail
     except Exception as exc:
         detail.error = f"aws client init failed: {exc}"
         return detail
@@ -103,6 +114,15 @@ def _resolve_region(target_name: str) -> str:
         or _runtime_env("AWS_REGION", "").strip()
         or _runtime_env("AWS_DEFAULT_REGION", "").strip()
         or "us-east-1"
+    )
+
+
+def _resolve_profile(target_name: str) -> str:
+    key = _target_env_key(target_name)
+    return (
+        _runtime_env(f"CASHLYCTL_AWS_PROFILE_{key}", "").strip()
+        or _runtime_env("CASHLYCTL_AWS_PROFILE", "").strip()
+        or _runtime_env("AWS_PROFILE", "").strip()
     )
 
 

@@ -26,6 +26,8 @@ class CommandKind(StrEnum):
     DIFF = "DIFF"
     PLAN = "PLAN"
     CONFIRM_DEPLOY = "CONFIRM_DEPLOY"
+    AWS_SSO_STATUS = "AWS_SSO_STATUS"
+    AWS_SSO_LOGIN = "AWS_SSO_LOGIN"
     SAVE_QRY = "SAVE_QRY"
     NUMBER = "NUMBER"
     RAW = "RAW"
@@ -94,6 +96,14 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand(kind=CommandKind.PLAN, raw=text, value=raw[5:].strip())
     if upper.startswith("CONFIRM DEPLOY "):
         return ParsedCommand(kind=CommandKind.CONFIRM_DEPLOY, raw=text, value=raw[15:].strip())
+    if upper in {"SSO STATUS", "AWS SSO STATUS"}:
+        return ParsedCommand(kind=CommandKind.AWS_SSO_STATUS, raw=text)
+    if upper in {"SSO LOGIN", "AWS SSO LOGIN"}:
+        return ParsedCommand(kind=CommandKind.AWS_SSO_LOGIN, raw=text, value="")
+    if upper.startswith("SSO LOGIN "):
+        return ParsedCommand(kind=CommandKind.AWS_SSO_LOGIN, raw=text, value=raw[10:].strip())
+    if upper.startswith("AWS SSO LOGIN "):
+        return ParsedCommand(kind=CommandKind.AWS_SSO_LOGIN, raw=text, value=raw[14:].strip())
     if upper.startswith("SAVE QRY "):
         return ParsedCommand(kind=CommandKind.SAVE_QRY, raw=text, value=raw[9:].strip())
     if raw.isdigit():

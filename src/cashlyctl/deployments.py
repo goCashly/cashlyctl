@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import re
 import shlex
 import subprocess
 from typing import Callable
@@ -57,6 +58,7 @@ class DeployPreviewInfo:
     branch: str
     current_sha: str
     target_sha: str
+    latest_merged_pr: str = "-"
     error: str = ""
 
 
@@ -346,10 +348,17 @@ def fetch_deploy_preview_info(
 ) -> DeployPreviewInfo:
     safe_branch = (branch or "main").strip()
     if not spec:
-        return DeployPreviewInfo(branch=safe_branch, current_sha="-", target_sha="-", error="Missing deploy spec")
+        return DeployPreviewInfo(
+            branch=safe_branch,
+            current_sha="-",
+            target_sha="-",
+            latest_merged_pr="-",
+            error="Missing deploy spec",
+        )
 
     current_sha = "-"
     target_sha = "-"
+    latest_merged_pr = "-"
     errors: list[str] = []
 
     ok_current, out_current = _ssh_exec(
@@ -374,12 +383,52 @@ def fetch_deploy_preview_info(
     else:
         errors.append("unable to resolve target SHA")
 
+    branch_ref = safe_branch if safe_branch.startswith("origin/") else f"origin/{safe_branch}"
+    ok_pr, out_pr = _ssh_exec(
+        spec,
+        f"cd {q(spec.app_dir)} && git log --first-parent --pretty=format:%h\\|%s -n 80 {q(branch_ref)}",
+        timeout_sec,
+    )
+    if not ok_pr and branch_ref != safe_branch:
+        ok_pr, out_pr = _ssh_exec(
+            spec,
+            f"cd {q(spec.app_dir)} && git log --first-parent --pretty=format:%h\\|%s -n 80 {q(safe_branch)}",
+            timeout_sec,
+        )
+    if ok_pr and out_pr:
+        latest_merged_pr = _extract_latest_merged_pr(out_pr)
+
     return DeployPreviewInfo(
         branch=safe_branch,
         current_sha=current_sha,
         target_sha=target_sha,
+        latest_merged_pr=latest_merged_pr,
         error="; ".join(errors),
     )
+
+
+def _extract_latest_merged_pr(log_output: str) -> str:
+    merge_re = re.compile(r"merge pull request #(\d+)", re.IGNORECASE)
+    squash_re = re.compile(r"\(#(\d+)\)\s*$")
+    for raw in log_output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "|" in line:
+            sha, subject = line.split("|", 1)
+        else:
+            sha, subject = "-", line
+        subject = subject.strip()
+
+        merge_match = merge_re.search(subject)
+        if merge_match:
+            return f"#{merge_match.group(1)} {subject} ({sha.strip()[:12]})"
+
+        squash_match = squash_re.search(subject)
+        if squash_match:
+            clean_subject = squash_re.sub("", subject).strip()
+            return f"#{squash_match.group(1)} {clean_subject} ({sha.strip()[:12]})"
+    return "-"
 
 
 def run_deploy_via_ssh(

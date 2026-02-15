@@ -5,6 +5,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -12,6 +13,7 @@ import urllib.request
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Callable, cast
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -218,12 +220,17 @@ class CashlyConsoleApp(App[None]):
         self.jobs_session_file: Path | None = None
         self.jobs_records: list[dict[str, str]] = []
         self.boot_checks_lines: list[str] = []
-        self.boot_checks_sequence: list[tuple[str, str, str]] = []
+        self.boot_checks_sequence: list[
+            tuple[str, str, Callable[[], tuple[str, int, str]] | None]
+        ] = []
         self.boot_checks_index = 0
         self.boot_checks_running = False
         self.boot_checks_wait_for_enter = False
         self.boot_scroll_offset = 0
         self.boot_checks_timer = None
+        self.boot_checks_seq = 0
+        self.boot_check_active_index: int | None = None
+        self.boot_check_active_label = ""
         self.app_state = AppState.PREAUTH
 
         self.panel = "L"
@@ -253,6 +260,7 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness_spinner_frames = ("|", "/", "-", "\\")
         self.deploy_readiness_spinner_index = 0
         self.deploy_readiness_seq = 0
+        self.deploy_readiness_silent_seq: dict[int, bool] = {}
         self.deploy_history: list[dict[str, str]] = []
         self.last_deploy_report: DeployRunResult | None = None
         self.deploy_state = "IDLE"
@@ -262,6 +270,7 @@ class CashlyConsoleApp(App[None]):
         self.deploy_preview_branch = "-"
         self.deploy_preview_current_sha = "-"
         self.deploy_preview_target_sha = "-"
+        self.deploy_preview_latest_pr = "-"
         self.deploy_preview_last_deploy_time = "-"
         self.deploy_preview_last_good = "-"
         self.deploy_preview_preflight_summary = "UNKNOWN"
@@ -276,6 +285,19 @@ class CashlyConsoleApp(App[None]):
         self.deploy_job_lines: list[str] = []
         self.deploy_job_result: DeployRunResult | None = None
         self.deploy_job_seq = 0
+        self.aws_sso_profiles = self._configured_aws_sso_profiles()
+        self.aws_sso_status: dict[str, dict[str, str]] = {
+            profile: {
+                "status": "UNKNOWN",
+                "detail": "not checked",
+                "checked_at": "-",
+            }
+            for profile in self.aws_sso_profiles
+        }
+        self.aws_sso_status_loading = False
+        self.aws_sso_status_seq = 0
+        self.aws_sso_login_running = False
+        self.aws_sso_login_targets: list[str] = []
 
         self.panel1_mode = "STATUS"
         self.tail_target = "neo4j-dev"
@@ -314,6 +336,7 @@ class CashlyConsoleApp(App[None]):
         self.query_one("#command_line", Input).focus()
         self.set_interval(1.0, self._on_clock_tick)
         self.set_interval(0.25, self._on_spinner_tick)
+        self._start_aws_sso_status_refresh("PREAUTH")
         if self.login_credentials:
             self._set_status("ENTER LOGON TO START AUTH", "ok")
         else:
@@ -350,7 +373,7 @@ class CashlyConsoleApp(App[None]):
         self._record_activity()
         self._set_job_status("SHOWING HELP...")
         self._set_status(
-            "HELP: LOGON, LOGOFF, SET STATE <observe|maint|service>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY (preview), CONFIRM DEPLOY ..., ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
+            "HELP: LOGON, LOGOFF, SET STATE <observe|maint|service>, SSO STATUS, SSO LOGIN <profile|ALL>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY (preview), CONFIRM DEPLOY ..., ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
             "ok",
         )
         self._set_job_status("HELP READY")
@@ -407,13 +430,17 @@ class CashlyConsoleApp(App[None]):
         if self.panel == "I" and self.instance_detail_target:
             self._load_instance_detail(self.instance_detail_target, force=True)
         deploy_refresh_started = False
+        sso_refresh_started = False
         if self.panel == "7":
             self._start_deploy_readiness_refresh("REFRESH")
             deploy_refresh_started = True
+        if self.panel == "L":
+            self._start_aws_sso_status_refresh("REFRESH")
+            sso_refresh_started = True
         self.login_credentials = load_login_credentials()
         self.host_ip_label, self.host_ip = _detect_banner_ip()
         self._render()
-        if deploy_refresh_started:
+        if deploy_refresh_started or sso_refresh_started:
             return
         self._set_job_status("REFRESH COMPLETE")
         self._set_status(f"REFRESHED {datetime.now().strftime('%H:%M:%S')}", "ok")
@@ -533,6 +560,12 @@ class CashlyConsoleApp(App[None]):
             return
         if parsed.kind == CommandKind.SET_STATE:
             self._set_requested_state(parsed.value)
+            return
+        if parsed.kind == CommandKind.AWS_SSO_STATUS:
+            self._start_aws_sso_status_refresh("AWS SSO STATUS")
+            return
+        if parsed.kind == CommandKind.AWS_SSO_LOGIN:
+            self._handle_aws_sso_login(parsed.value)
             return
         if parsed.kind == CommandKind.NUMBER and self.panel in {"L", "P"}:
             self._handle_number(parsed.value)
@@ -761,6 +794,8 @@ class CashlyConsoleApp(App[None]):
         self.boot_checks_index = 0
         self.boot_checks_wait_for_enter = False
         self.boot_scroll_offset = 0
+        self.boot_check_active_index = None
+        self.boot_check_active_label = ""
         self.app_state = AppState.PREAUTH
         self.instance_detail_target = ""
         self.instance_detail_data = None
@@ -771,8 +806,10 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness = {}
         self.deploy_readiness_last_refresh_at = "-"
         self.deploy_readiness_loading = False
+        self.deploy_readiness_silent_seq = {}
         self.deploy_state = "IDLE"
         self.deploy_preview_target = ""
+        self.deploy_preview_latest_pr = "-"
         self.deploy_preview_required_confirm = ""
         self.deploy_preview_confirmation_hint = ""
         self.deploy_job_running = False
@@ -807,9 +844,17 @@ class CashlyConsoleApp(App[None]):
                 )
                 self._render()
             if panel_code == "7":
-                self._start_deploy_readiness_refresh("PANEL OPEN")
-                self._set_job_status("PANEL 7 LOADING PRECHECKS...", render_now=False)
-                self._set_status("PANEL 7 OPEN. DEPLOY PRECHECKS RUNNING...", "warn")
+                if not self.deploy_readiness and not self.deploy_readiness_loading:
+                    self._start_deploy_readiness_refresh("PANEL OPEN")
+                    self._set_job_status("PANEL 7 LOADING PRECHECKS...", render_now=False)
+                    self._set_status("PANEL 7 OPEN. DEPLOY PRECHECKS RUNNING...", "warn")
+                    return
+                if self.deploy_readiness_loading:
+                    self._set_job_status("PANEL 7 LOADING PRECHECKS...", render_now=False)
+                    self._set_status("PANEL 7 OPEN. USING PRELOAD CHECKS...", "warn")
+                    return
+                self._set_job_status("PANEL 7 READY", render_now=False)
+                self._set_status("PANEL 7 OPEN. PREFLIGHT CACHE READY.", "ok")
                 return
             self._set_job_status(f"PANEL {panel_code} READY")
             self._set_status(f"PANEL {panel_code} OPEN", "ok")
@@ -1011,6 +1056,7 @@ class CashlyConsoleApp(App[None]):
         self.deploy_preview_branch = preview.branch
         self.deploy_preview_current_sha = preview.current_sha
         self.deploy_preview_target_sha = preview.target_sha
+        self.deploy_preview_latest_pr = preview.latest_merged_pr
         self.deploy_preview_info_error = preview.error
         self.deploy_preview_last_deploy_time = (
             (self._latest_deploy_record(target) or {}).get("finished_at", "-")
@@ -1660,8 +1706,10 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness = {}
         self.deploy_readiness_last_refresh_at = "-"
         self.deploy_readiness_loading = False
+        self.deploy_readiness_silent_seq = {}
         self.deploy_state = "IDLE"
         self.deploy_preview_target = ""
+        self.deploy_preview_latest_pr = "-"
         self.deploy_preview_required_confirm = ""
         self.deploy_preview_confirmation_hint = ""
         self.deploy_job_running = False
@@ -1714,17 +1762,19 @@ class CashlyConsoleApp(App[None]):
         self.deploy_readiness = deploy_readiness
         self.deploy_readiness_last_refresh_at = checked_at
 
-    def _start_deploy_readiness_refresh(self, reason: str) -> None:
+    def _start_deploy_readiness_refresh(self, reason: str, silent: bool = False) -> None:
         if self.deploy_readiness_loading:
             return
         self.deploy_readiness_loading = True
         self.deploy_readiness_spinner_index = 0
         self.deploy_readiness_seq += 1
         seq = self.deploy_readiness_seq
-        self._set_job_status("DEPLOY PREFLIGHT RUNNING...", render_now=False)
-        self._set_status(f"{reason}: DEPLOY PREFLIGHT RUNNING...", "warn")
-        self._render()
-        self.refresh()
+        self.deploy_readiness_silent_seq[seq] = silent
+        if not silent:
+            self._set_job_status("DEPLOY PREFLIGHT RUNNING...", render_now=False)
+            self._set_status(f"{reason}: DEPLOY PREFLIGHT RUNNING...", "warn")
+            self._render()
+            self.refresh()
         threading.Thread(
             target=self._deploy_readiness_worker,
             args=(seq,),
@@ -1762,10 +1812,12 @@ class CashlyConsoleApp(App[None]):
     ) -> None:
         if seq != self.deploy_readiness_seq:
             return
+        silent = self.deploy_readiness_silent_seq.pop(seq, False)
         self.deploy_readiness_loading = False
         if error:
-            self._set_job_status("DEPLOY PREFLIGHT FAILED", render_now=False)
-            self._set_status(f"DEPLOY PREFLIGHT FAILED: {error}", "error")
+            if not silent:
+                self._set_job_status("DEPLOY PREFLIGHT FAILED", render_now=False)
+                self._set_status(f"DEPLOY PREFLIGHT FAILED: {error}", "error")
             self._render()
             self.refresh()
             return
@@ -1776,23 +1828,233 @@ class CashlyConsoleApp(App[None]):
 
         fail_count = sum(1 for item in self.deploy_readiness.values() if item.status == "FAIL")
         warn_count = sum(1 for item in self.deploy_readiness.values() if item.status == "WARN")
-        if fail_count > 0:
-            self._set_job_status("DEPLOY PREFLIGHT NOT READY", render_now=False)
-            self._set_status(
-                f"DEPLOY PREFLIGHT COMPLETE: {fail_count} FAIL / {warn_count} WARN",
-                "warn",
-            )
-        elif warn_count > 0:
-            self._set_job_status("DEPLOY PREFLIGHT WARN", render_now=False)
-            self._set_status(
-                f"DEPLOY PREFLIGHT COMPLETE: 0 FAIL / {warn_count} WARN",
-                "warn",
-            )
-        else:
-            self._set_job_status("DEPLOY PREFLIGHT READY", render_now=False)
-            self._set_status("DEPLOY PREFLIGHT COMPLETE: ALL TARGETS READY", "ok")
+        if not silent:
+            if fail_count > 0:
+                self._set_job_status("DEPLOY PREFLIGHT NOT READY", render_now=False)
+                self._set_status(
+                    f"DEPLOY PREFLIGHT COMPLETE: {fail_count} FAIL / {warn_count} WARN",
+                    "warn",
+                )
+            elif warn_count > 0:
+                self._set_job_status("DEPLOY PREFLIGHT WARN", render_now=False)
+                self._set_status(
+                    f"DEPLOY PREFLIGHT COMPLETE: 0 FAIL / {warn_count} WARN",
+                    "warn",
+                )
+            else:
+                self._set_job_status("DEPLOY PREFLIGHT READY", render_now=False)
+                self._set_status("DEPLOY PREFLIGHT COMPLETE: ALL TARGETS READY", "ok")
         self._render()
         self.refresh()
+
+    def _configured_aws_sso_profiles(self) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def add_profile(raw: str) -> None:
+            profile = raw.strip()
+            if not profile:
+                return
+            key = profile.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            ordered.append(profile)
+
+        add_profile(_runtime_env("CASHLYCTL_AWS_PROFILE", ""))
+        add_profile(_runtime_env("AWS_PROFILE", ""))
+        for target in self.network_probe_targets:
+            target_key = "".join(char if char.isalnum() else "_" for char in target.name).upper()
+            add_profile(_runtime_env(f"CASHLYCTL_AWS_PROFILE_{target_key}", ""))
+        return ordered
+
+    def _refresh_aws_sso_profile_list(self) -> None:
+        profiles = self._configured_aws_sso_profiles()
+        self.aws_sso_profiles = profiles
+        self.aws_sso_status = {
+            profile: self.aws_sso_status.get(
+                profile,
+                {
+                    "status": "UNKNOWN",
+                    "detail": "not checked",
+                    "checked_at": "-",
+                },
+            )
+            for profile in profiles
+        }
+
+    def _start_aws_sso_status_refresh(self, reason: str) -> None:
+        if self.aws_sso_status_loading:
+            return
+        self._refresh_aws_sso_profile_list()
+        if not self.aws_sso_profiles:
+            self._set_job_status("AWS SSO STATUS: NO PROFILES", render_now=False)
+            self._set_status("NO AWS SSO PROFILES CONFIGURED", "warn")
+            self._render()
+            self.refresh()
+            return
+
+        self.aws_sso_status_loading = True
+        self.deploy_readiness_spinner_index = 0
+        self.aws_sso_status_seq += 1
+        seq = self.aws_sso_status_seq
+        self._set_job_status("AWS SSO STATUS CHECK RUNNING...", render_now=False)
+        self._set_status(f"{reason}: CHECKING AWS SSO PROFILE STATUS...", "warn")
+        self._render()
+        self.refresh()
+        threading.Thread(
+            target=self._aws_sso_status_worker,
+            args=(seq, list(self.aws_sso_profiles)),
+            daemon=True,
+        ).start()
+
+    def _aws_sso_status_worker(self, seq: int, profiles: list[str]) -> None:
+        try:
+            results: dict[str, dict[str, str]] = {}
+            for profile in profiles:
+                status, detail = self._check_aws_sso_profile(profile)
+                results[profile] = {
+                    "status": status,
+                    "detail": detail,
+                    "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            self.call_from_thread(self._finish_aws_sso_status_refresh, seq, results, "")
+        except Exception as exc:
+            self.call_from_thread(self._finish_aws_sso_status_refresh, seq, {}, str(exc))
+
+    def _finish_aws_sso_status_refresh(
+        self,
+        seq: int,
+        results: dict[str, dict[str, str]],
+        error: str,
+    ) -> None:
+        if seq != self.aws_sso_status_seq:
+            return
+        self.aws_sso_status_loading = False
+        if error:
+            self._set_job_status("AWS SSO STATUS CHECK FAILED", render_now=False)
+            self._set_status(f"AWS SSO STATUS CHECK FAILED: {error}", "error")
+            self._render()
+            self.refresh()
+            return
+
+        self.aws_sso_status = results
+        ready = sum(1 for row in results.values() if row.get("status") == "READY")
+        total = len(results)
+        if total == 0:
+            self._set_job_status("AWS SSO STATUS: NO PROFILES", render_now=False)
+            self._set_status("NO AWS SSO PROFILES CONFIGURED", "warn")
+        elif ready == total:
+            self._set_job_status("AWS SSO READY", render_now=False)
+            self._set_status(f"AWS SSO READY: {ready}/{total} profiles", "ok")
+        else:
+            self._set_job_status("AWS SSO PARTIAL", render_now=False)
+            self._set_status(f"AWS SSO PARTIAL: {ready}/{total} profiles ready", "warn")
+        self._render()
+        self.refresh()
+
+    def _handle_aws_sso_login(self, value: str) -> None:
+        self._refresh_aws_sso_profile_list()
+        raw = value.strip()
+        if self.aws_sso_login_running:
+            self._set_status("AWS SSO LOGIN ALREADY RUNNING", "warn")
+            return
+        if not raw:
+            self._set_status("USAGE: SSO LOGIN <profile|ALL>", "warn")
+            return
+        if raw.upper() == "ALL":
+            profiles = list(self.aws_sso_profiles)
+        else:
+            profiles = [raw]
+        if not profiles:
+            self._set_status("NO AWS SSO PROFILES CONFIGURED", "warn")
+            return
+
+        self.aws_sso_login_running = True
+        self.aws_sso_login_targets = profiles
+        self.deploy_readiness_spinner_index = 0
+        joined = ", ".join(profiles)
+        self._set_job_status("AWS SSO LOGIN RUNNING", render_now=False)
+        self._set_status(f"AWS SSO LOGIN STARTED: {joined}", "warn")
+        self._render()
+        self.refresh()
+        threading.Thread(
+            target=self._aws_sso_login_worker,
+            args=(profiles,),
+            daemon=True,
+        ).start()
+
+    def _aws_sso_login_worker(self, profiles: list[str]) -> None:
+        results: list[tuple[str, bool, str]] = []
+        for profile in profiles:
+            ok, detail = self._run_aws_cli(
+                ["sso", "login", "--profile", profile],
+                timeout_sec=900,
+            )
+            results.append((profile, ok, detail))
+        self.call_from_thread(self._finish_aws_sso_login, results)
+
+    def _finish_aws_sso_login(self, results: list[tuple[str, bool, str]]) -> None:
+        self.aws_sso_login_running = False
+        self.aws_sso_login_targets = []
+        failed = [profile for profile, ok, _ in results if not ok]
+        if failed:
+            self._set_job_status("AWS SSO LOGIN FAILED", render_now=False)
+            self._set_status(f"AWS SSO LOGIN FAILED: {', '.join(failed)}", "error")
+        else:
+            self._set_job_status("AWS SSO LOGIN COMPLETE", render_now=False)
+            self._set_status("AWS SSO LOGIN COMPLETE", "ok")
+        self._start_aws_sso_status_refresh("AWS SSO LOGIN")
+
+    def _check_aws_sso_profile(self, profile: str) -> tuple[str, str]:
+        ok, output = self._run_aws_cli(
+            ["sts", "get-caller-identity", "--profile", profile, "--output", "json"],
+            timeout_sec=25,
+        )
+        if ok:
+            try:
+                payload = json.loads(output)
+                account = str(payload.get("Account", "-"))
+                return "READY", f"account={account}"
+            except json.JSONDecodeError:
+                return "READY", "identity ok"
+
+        lower = output.lower()
+        if "aws cli not found" in lower:
+            return "CLI_MISSING", "aws cli not found in PATH"
+        if "profile" in lower and "not found" in lower:
+            return "MISSING", "profile not configured"
+        if "sso session" in lower or "token has expired" in lower or "unable to locate credentials" in lower:
+            return "EXPIRED", "run SSO LOGIN <profile>"
+        if "accessdenied" in lower or "not authorized" in lower:
+            return "DENIED", "access denied for role/account"
+        first = output.splitlines()[0].strip() if output else "unknown error"
+        return "ERROR", first[:120]
+
+    @staticmethod
+    def _run_aws_cli(args: list[str], timeout_sec: int = 30) -> tuple[bool, str]:
+        cmd = ["aws", *args]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=max(5, timeout_sec),
+                check=False,
+            )
+        except FileNotFoundError:
+            return False, "aws cli not found in PATH"
+        except subprocess.TimeoutExpired:
+            return False, "aws cli command timed out"
+        except Exception as exc:
+            return False, f"aws cli failed: {exc}"
+
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if result.returncode == 0:
+            return True, stdout or "ok"
+        detail = "\n".join(part for part in (stdout, stderr) if part).strip()
+        return False, detail or f"exit={result.returncode}"
 
     def _network_probe_refresh_due(self) -> bool:
         if self.network_probe_last_refresh_monotonic <= 0:
@@ -1834,11 +2096,32 @@ class CashlyConsoleApp(App[None]):
         self._render()
 
     def _on_spinner_tick(self) -> None:
-        if not self.deploy_readiness_loading:
+        boot_spinner_active = (
+            self.boot_checks_running
+            and self.panel == "B"
+            and self.boot_check_active_index is not None
+            and bool(self.boot_check_active_label)
+        )
+        if not (
+            self.deploy_readiness_loading
+            or self.aws_sso_status_loading
+            or self.aws_sso_login_running
+            or boot_spinner_active
+        ):
             return
         self.deploy_readiness_spinner_index = (
             self.deploy_readiness_spinner_index + 1
         ) % len(self.deploy_readiness_spinner_frames)
+        if boot_spinner_active:
+            idx = self.boot_check_active_index
+            if idx is not None and 0 <= idx < len(self.boot_checks_lines):
+                frame = self.deploy_readiness_spinner_frames[
+                    self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+                ]
+                self.boot_checks_lines[idx] = self._boot_check_pending_line(
+                    self.boot_check_active_label,
+                    frame,
+                )
         self._render()
 
     def _apply_state_theme(self) -> None:
@@ -1950,13 +2233,8 @@ class CashlyConsoleApp(App[None]):
         accent_style = self._accent_style()
         logo_style = self._mode_style()
         styled_logo_lines = [self._style_text(line, logo_style) for line in logo_lines]
-        header_state = (
-            self.selected_postauth_state.value
-            if self.target_state_selected
-            else AppState.PREAUTH.value
-        )
         header_mode = self.selected_postauth_state if self.target_state_selected else AppState.PREAUTH
-        return [
+        lines = [
             self._line_lr(
                 "CASHLYCTL OPERATIONS CONSOLE 0.1",
                 right_ip.rjust(right_col_width),
@@ -1996,7 +2274,11 @@ class CashlyConsoleApp(App[None]):
             "===> Runtime service arm: SERVICE ON, then PROCEED <target>",
             "===> Role policy: admin=OBSERVE/MAINT, superadmin=ALL",
             "",
-            self._line_lr(
+        ]
+        lines.extend(self._preauth_sso_lines())
+        lines.extend(
+            [
+                self._line_lr(
                 f"ENV: {self._env_banner()}",
                 f"PROFILE: {self.active_profile.name}",
                 left_style=accent_style,
@@ -2009,7 +2291,82 @@ class CashlyConsoleApp(App[None]):
                 right_style=accent_style,
             ),
             "",
-        ]
+            ]
+        )
+        return lines
+
+    def _preauth_sso_lines(self) -> list[str]:
+        self._refresh_aws_sso_profile_list()
+        lines = ["===> AWS SSO profile readiness:"]
+        if self.aws_sso_status_loading:
+            frame = self.deploy_readiness_spinner_frames[
+                self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+            ]
+            lines.append(
+                self._style_text(
+                    f"     checking profiles [{frame}]...",
+                    "bold #ffd700",
+                )
+            )
+        if self.aws_sso_login_running and self.aws_sso_login_targets:
+            frame = self.deploy_readiness_spinner_frames[
+                self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+            ]
+            targets = ", ".join(self.aws_sso_login_targets)
+            lines.append(
+                self._style_text(
+                    f"     login running [{frame}] targets={targets}",
+                    "bold #ffd700",
+                )
+            )
+
+        if not self.aws_sso_profiles:
+            lines.extend(
+                [
+                    "     no profiles configured (set CASHLYCTL_AWS_PROFILE_<TARGET>)",
+                    "===> Commands: SSO STATUS | SSO LOGIN <profile|ALL>",
+                    "",
+                ]
+            )
+            return lines
+
+        detail_width = max(20, self._width() - 44)
+        for profile in self.aws_sso_profiles:
+            row = self.aws_sso_status.get(
+                profile,
+                {
+                    "status": "UNKNOWN",
+                    "detail": "not checked",
+                    "checked_at": "-",
+                },
+            )
+            status_token = self._sso_status_token(row.get("status", "UNKNOWN"))
+            detail = self._markup_safe(self._clip_cell(row.get("detail", "-"), detail_width))
+            lines.append(f"     {profile:<20} {status_token} {detail}")
+
+        lines.extend(
+            [
+                "===> Commands: SSO STATUS | SSO LOGIN <profile|ALL>",
+                "",
+            ]
+        )
+        return lines
+
+    def _sso_status_token(self, status: str) -> str:
+        token = (status or "UNKNOWN").strip().upper()
+        style = self._sso_status_style(token)
+        return self._style_text(f"{token:<11}", style)
+
+    @staticmethod
+    def _sso_status_style(status: str) -> str:
+        value = status.strip().upper()
+        if value == "READY":
+            return "bold #00ff00"
+        if value in {"EXPIRED", "UNKNOWN"}:
+            return "bold #ffd700"
+        if value in {"ERROR", "DENIED", "MISSING", "CLI_MISSING"}:
+            return "bold #ff3030"
+        return "white"
 
     def _accent_style(self) -> str:
         return f"bold {self._structure_color()}"
@@ -2041,7 +2398,7 @@ class CashlyConsoleApp(App[None]):
             self._line_lr("PANEL: B  POST-LOGON SYSTEM CHECKS", f"STATE: {right}"),
             self._style_text(self._rule("="), self._accent_style()),
             "",
-            "Boot check sequence (stubbed) - live checks will be wired later.",
+            "Live system checks only.",
             "",
         ]
         content = self._boot_content_lines()
@@ -2057,19 +2414,24 @@ class CashlyConsoleApp(App[None]):
     def _start_boot_checks(self) -> None:
         self._stop_boot_checks()
         self.boot_checks_lines = []
-        self.boot_checks_sequence = self._build_boot_checks_sequence()
-        self.boot_checks_index = 0
+        self.boot_checks_sequence = self._build_boot_check_operations()
         self.boot_checks_running = True
         self.boot_checks_wait_for_enter = False
         self.boot_scroll_offset = 0
+        self.boot_check_active_index = None
+        self.boot_check_active_label = ""
         self.panel = "B"
         self._set_job_status("POST-LOGON CHECKS RUNNING", render_now=False)
         self._set_status("RUNNING POST-LOGON SYSTEM CHECKS...", "ok")
         self._render()
         self.refresh()
-
-        self._boot_checks_tick()
-        self.boot_checks_timer = self.set_interval(1.0 / 15.0, self._boot_checks_tick)
+        self.boot_checks_seq += 1
+        seq = self.boot_checks_seq
+        threading.Thread(
+            target=self._boot_checks_worker,
+            args=(seq,),
+            daemon=True,
+        ).start()
 
     def _boot_content_lines(self) -> list[str]:
         content = list(self.boot_checks_lines)
@@ -2082,35 +2444,106 @@ class CashlyConsoleApp(App[None]):
         return max(8, self.size.height - 18)
 
     def _stop_boot_checks(self) -> None:
-        timer = self.boot_checks_timer
-        self.boot_checks_timer = None
-        if timer is not None:
-            try:
-                timer.stop()
-            except Exception:
-                pass
         self.boot_checks_running = False
+        self.boot_check_active_index = None
+        self.boot_check_active_label = ""
+        self.boot_checks_seq += 1
 
-    def _boot_checks_tick(self) -> None:
-        if not self.boot_checks_running:
-            return
-        if self.boot_checks_index < len(self.boot_checks_sequence):
-            kind, label, status = self.boot_checks_sequence[self.boot_checks_index]
-            self.boot_checks_index += 1
-
+    def _boot_checks_worker(self, seq: int) -> None:
+        for kind, label, runner in self.boot_checks_sequence:
+            if not self._boot_run_active(seq):
+                return
             if kind == "phase":
-                self.boot_checks_lines.append(self._style_text(label, self._accent_style()))
-            else:
-                self.boot_checks_lines.append(self._boot_check_line(label, status))
+                self.call_from_thread(self._boot_append_phase_line, seq, label)
+                continue
+            line_index = self.call_from_thread(self._boot_append_pending_check_line, seq, label)
+            if line_index is None:
+                return
+            status, elapsed_ms, final_label = self._run_boot_check_runner(runner, label)
+            if not self._boot_run_active(seq):
+                return
+            self.call_from_thread(
+                self._boot_complete_check_line,
+                seq,
+                line_index,
+                final_label,
+                status,
+                elapsed_ms,
+            )
+        if self._boot_run_active(seq):
+            self.call_from_thread(self._finish_boot_checks, seq)
 
-        if self.boot_checks_index >= len(self.boot_checks_sequence):
-            self._finish_boot_checks()
+    def _boot_run_active(self, seq: int) -> bool:
+        return self.boot_checks_running and seq == self.boot_checks_seq and self.panel == "B"
+
+    def _boot_append_phase_line(self, seq: int, label: str) -> None:
+        if not self._boot_run_active(seq):
             return
+        self.boot_checks_lines.append(self._style_text(label, self._accent_style()))
         self._render()
         self.refresh()
 
-    def _finish_boot_checks(self) -> None:
-        self._stop_boot_checks()
+    def _boot_append_pending_check_line(self, seq: int, label: str) -> int | None:
+        if not self._boot_run_active(seq):
+            return None
+        frame = self.deploy_readiness_spinner_frames[
+            self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+        ]
+        self.boot_checks_lines.append(self._boot_check_pending_line(label, frame))
+        index = len(self.boot_checks_lines) - 1
+        self.boot_check_active_index = index
+        self.boot_check_active_label = label
+        self._render()
+        self.refresh()
+        return index
+
+    def _boot_complete_check_line(
+        self,
+        seq: int,
+        index: int,
+        label: str,
+        status: str,
+        elapsed_ms: int,
+    ) -> None:
+        if not self._boot_run_active(seq):
+            return
+        if index < 0 or index >= len(self.boot_checks_lines):
+            return
+        if self.boot_check_active_index == index:
+            self.boot_check_active_index = None
+            self.boot_check_active_label = ""
+        self.boot_checks_lines[index] = self._boot_check_line(
+            f"{label} ({max(0, int(elapsed_ms))}ms)",
+            status,
+        )
+        self._render()
+        self.refresh()
+
+    @staticmethod
+    def _run_boot_check_runner(
+        runner: Callable[[], tuple[str, int, str]] | None,
+        fallback_label: str,
+    ) -> tuple[str, int, str]:
+        started = time.perf_counter()
+        if runner is None:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return "WARN", max(0, elapsed), fallback_label
+        try:
+            status, elapsed_ms, label = runner()
+        except Exception as exc:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return "FAIL", max(0, elapsed), f"{fallback_label} ({exc})"
+        normalized = status.strip().upper()
+        if normalized not in {"OK", "WARN", "FAIL"}:
+            normalized = "WARN"
+        return normalized, max(0, int(elapsed_ms)), label
+
+    def _finish_boot_checks(self, seq: int | None = None) -> None:
+        if seq is not None and seq != self.boot_checks_seq:
+            return
+        self.boot_checks_running = False
+        self.boot_check_active_index = None
+        self.boot_check_active_label = ""
         self.boot_checks_wait_for_enter = True
         self._set_job_status("POST-LOGON CHECKS COMPLETE", render_now=False)
         self._set_status("SYSTEM CHECKS COMPLETE. PRESS ENTER TO CONTINUE", "ok")
@@ -2152,49 +2585,405 @@ class CashlyConsoleApp(App[None]):
             "OK": "bold green",
             "WARN": "bold yellow",
             "FAIL": "bold red",
-            "SKIP": "bold #aaaaaa",
         }.get(status, self._accent_style())
         return self._line_lr(message, f"[ {status} ]", right_style=style)
 
-    def _build_boot_checks_sequence(self) -> list[tuple[str, str, str]]:
-        return [
-            ("phase", "-- Identity & Mode --", ""),
-            ("check", "Validating auth token audience/expiry", "OK"),
-            ("check", "Loading role policy and selected mode", "OK"),
-            ("check", "Resolving active profile target", "OK"),
-            ("check", "Checking local/server time drift (<5s)", "OK"),
-            ("phase", "-- Control Plane --", ""),
-            ("check", "Starting control plane reachability (/health)", "OK"),
-            ("check", "Verifying control API auth (/session)", "OK"),
-            ("check", "Validating client/server contract version", "WARN"),
-            ("check", "Loading feature gates (analytics, ops, audit)", "OK"),
-            ("phase", "-- Network & DNS --", ""),
-            ("check", "Resolving DNS: neo4j, dealsense, metrics", "OK"),
-            ("check", "Validating TLS chain and expiry windows", "OK"),
-            ("check", "Checking outbound egress policy", "SKIP"),
-            ("phase", "-- Core Services --", ""),
-            ("check", "DealSense API health endpoint", "OK"),
-            ("check", "DealSense model id/version loaded", "OK"),
-            ("check", "Inference smoke test (synthetic)", "SKIP"),
-            ("check", "Graph service reachable via control plane", "OK"),
-            ("check", "Graph read query smoke", "OK"),
-            ("check", "Write lock policy in OBSERVE", "OK"),
-            ("phase", "-- Observability --", ""),
-            ("check", "Metrics endpoint availability", "OK"),
-            ("check", "Log export channel availability", "OK"),
-            ("check", "Recent error-rate quick read (15m)", "WARN"),
-            ("phase", "-- Deployment Integrity --", ""),
-            ("check", "Engine version matches expected release", "OK"),
-            ("check", "Model checksum vs release manifest", "OK"),
-            ("check", "Config fingerprint baseline compare", "WARN"),
-            ("phase", "-- Safety Gates --", ""),
-            ("check", "Confirming write capability lock", "OK"),
-            ("check", "Validating SERVICE arming guard", "OK"),
-            ("check", "Validating server-side role constraints", "OK"),
-            ("phase", "-- Infrastructure (profile-dependent) --", ""),
-            ("check", "Infra connector reachability", "SKIP"),
-            ("check", "Proxmox/AWS/Azure capability probe", "SKIP"),
-        ]
+    def _boot_check_pending_line(self, message: str, spinner: str) -> str:
+        return self._line_lr(f"{message} [{spinner}]", "")
+
+    def _build_boot_check_operations(
+        self,
+    ) -> list[tuple[str, str, Callable[[], tuple[str, int, str]] | None]]:
+        sequence: list[tuple[str, str, Callable[[], tuple[str, int, str]] | None]] = []
+        state: dict[str, object] = {
+            "health_ready": False,
+            "health_ms": 0,
+            "network_ready": False,
+            "network_ms": 0,
+            "network_error": "",
+            "deploy_specs_ready": False,
+            "deploy_specs_ms": 0,
+            "sso_profiles_ready": False,
+            "sso_profiles_ms": 0,
+        }
+
+        def timed(operation: Callable[[], object]) -> tuple[object, int]:
+            started = time.perf_counter()
+            value = operation()
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return value, max(0, elapsed)
+
+        def ensure_health() -> int:
+            if not cast(bool, state["health_ready"]):
+                snapshot, elapsed = timed(lambda: run_mvp_checks(self.active_profile))
+                self.health_results = cast(list[HealthCheckResult], snapshot)
+                state["health_ready"] = True
+                state["health_ms"] = elapsed
+            return cast(int, state["health_ms"])
+
+        def ensure_network() -> tuple[str, int]:
+            if not cast(bool, state["network_ready"]):
+                started = time.perf_counter()
+                try:
+                    if self.network_probe_targets:
+                        self.network_probe_results = probe_targets(
+                            self.network_probe_targets,
+                            timeout_seconds=self.network_probe_timeout_seconds,
+                            latency_warn_ms=self.network_probe_latency_warn_ms,
+                            tls_warn_days=self.network_probe_tls_warn_days,
+                        )
+                        self.network_probe_last_refresh_monotonic = time.monotonic()
+                        self.network_probe_last_refresh_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        self.network_probe_results = []
+                    state["network_error"] = ""
+                except Exception as exc:
+                    state["network_error"] = str(exc)
+                finally:
+                    state["network_ready"] = True
+                    state["network_ms"] = max(0, int((time.perf_counter() - started) * 1000))
+            return cast(str, state["network_error"]), cast(int, state["network_ms"])
+
+        def ensure_deploy_specs() -> int:
+            if not cast(bool, state["deploy_specs_ready"]):
+                specs, elapsed = timed(
+                    lambda: load_deploy_specs([target.name for target in self.network_probe_targets])
+                )
+                self.deploy_specs = cast(dict[str, DeploySpec], specs)
+                state["deploy_specs_ready"] = True
+                state["deploy_specs_ms"] = elapsed
+            return cast(int, state["deploy_specs_ms"])
+
+        def ensure_sso_profiles() -> int:
+            if not cast(bool, state["sso_profiles_ready"]):
+                _, elapsed = timed(self._refresh_aws_sso_profile_list)
+                state["sso_profiles_ready"] = True
+                state["sso_profiles_ms"] = elapsed
+            return cast(int, state["sso_profiles_ms"])
+
+        def phase(title: str) -> None:
+            sequence.append(("phase", f"-- {title} --", None))
+
+        def check(label: str, runner: Callable[[], tuple[str, int, str]]) -> None:
+            sequence.append(("check", label, runner))
+
+        def immediate(label: str, status: str) -> Callable[[], tuple[str, int, str]]:
+            return lambda: (status, 0, label)
+
+        phase("Identity & Mode")
+        check(
+            f"Session authenticated as {self.session_user} ({self.session_role})",
+            immediate(
+                f"Session authenticated as {self.session_user} ({self.session_role})",
+                "OK" if self.authenticated else "FAIL",
+            ),
+        )
+        check(
+            f"Role policy + mode loaded: role={self.session_role} mode={self.selected_postauth_state.value}",
+            immediate(
+                f"Role policy + mode loaded: role={self.session_role} mode={self.selected_postauth_state.value}",
+                "OK",
+            ),
+        )
+        check(
+            f"Active profile resolved: {self.active_profile.name} ({self.active_profile.env.value}/{self.active_profile.mode.value})",
+            immediate(
+                f"Active profile resolved: {self.active_profile.name} ({self.active_profile.env.value}/{self.active_profile.mode.value})",
+                "OK",
+            ),
+        )
+        check(
+            f"Local credential store loaded ({len(self.login_credentials)} users)",
+            immediate(
+                f"Local credential store loaded ({len(self.login_credentials)} users)",
+                "OK" if self.login_credentials else "FAIL",
+            ),
+        )
+        check(
+            f"Session job log initialized ({self._jobs_log_display_path()})",
+            immediate(
+                f"Session job log initialized ({self._jobs_log_display_path()})",
+                "OK" if self.jobs_session_file else "WARN",
+            ),
+        )
+
+        phase("Control Plane")
+        if self.active_profile.mode == DeploymentMode.ENTERPRISE:
+            control_label = f"Control API reachability ({self.active_profile.control_api_base_url})"
+
+            def control_runner() -> tuple[str, int, str]:
+                health_ms = ensure_health()
+                status = self._health_status_for_check("control_api")
+                latency = self._health_latency_for_check("control_api")
+                return status, latency if latency > 0 else health_ms, control_label
+
+            check(control_label, control_runner)
+        else:
+            check(
+                "Internal mode selected (direct service checks enabled)",
+                immediate("Internal mode selected (direct service checks enabled)", "OK"),
+            )
+
+        phase("Network & DNS")
+        check(
+            f"Probe targets configured ({len(self.network_probe_targets)})",
+            immediate(
+                f"Probe targets configured ({len(self.network_probe_targets)})",
+                "OK" if self.network_probe_targets else "WARN",
+            ),
+        )
+
+        def dns_runner() -> tuple[str, int, str]:
+            error, elapsed = ensure_network()
+            if error:
+                return "FAIL", elapsed, f"DNS resolution checks failed: {error}"
+            if not self.network_probe_results:
+                return "WARN", elapsed, "DNS/TLS checks not available (no targets/probe results)"
+            states: list[str] = []
+            max_dns_ms = 0
+            for item in self.network_probe_results:
+                max_dns_ms = max(max_dns_ms, item.dns_ms)
+                if not item.dns_ok:
+                    states.append("FAIL")
+                elif item.dns_ms > self.network_probe_latency_warn_ms:
+                    states.append("WARN")
+                else:
+                    states.append("OK")
+            return (
+                self._rollup_status(states),
+                max_dns_ms,
+                f"DNS resolution checks completed ({len(self.network_probe_results)} targets)",
+            )
+
+        def tls_runner() -> tuple[str, int, str]:
+            error, elapsed = ensure_network()
+            if error:
+                return "FAIL", elapsed, f"TLS checks failed: {error}"
+            if not self.network_probe_results:
+                return "WARN", elapsed, "DNS/TLS checks not available (no targets/probe results)"
+            states: list[str] = []
+            max_tls_ms = 0
+            for item in self.network_probe_results:
+                max_tls_ms = max(max_tls_ms, item.tls_ms)
+                if not item.tls_ok:
+                    states.append("FAIL")
+                elif item.tls_days_left < self.network_probe_tls_warn_days:
+                    states.append("WARN")
+                else:
+                    states.append("OK")
+            return (
+                self._rollup_status(states),
+                max_tls_ms,
+                f"TLS chain/expiry checks completed ({len(self.network_probe_results)} targets)",
+            )
+
+        check("DNS resolution checks completed", dns_runner)
+        check("TLS chain/expiry checks completed", tls_runner)
+
+        phase("Core Services")
+        if self.active_profile.mode == DeploymentMode.INTERNAL:
+            if self.active_profile.neo4j_bolt_uri:
+                neo4j_label = "Neo4j service reachability"
+
+                def neo4j_runner() -> tuple[str, int, str]:
+                    ensure_health()
+                    status = self._health_status_for_check("neo4j")
+                    latency = self._health_latency_for_check("neo4j")
+                    return status, latency, neo4j_label
+
+                check(neo4j_label, neo4j_runner)
+
+                graph_label = "Graph read smoke query"
+
+                def graph_runner() -> tuple[str, int, str]:
+                    ensure_health()
+                    neo4j_status = self._health_status_for_check("neo4j")
+                    latency = self._health_latency_for_check("neo4j")
+                    return (
+                        neo4j_status if neo4j_status != "FAIL" else "FAIL",
+                        latency,
+                        graph_label,
+                    )
+
+                check(graph_label, graph_runner)
+
+            if self.active_profile.dealsense_url:
+                dealsense_label = "DealSense API health endpoint"
+
+                def dealsense_runner() -> tuple[str, int, str]:
+                    ensure_health()
+                    status = self._health_status_for_check("dealsense")
+                    latency = self._health_latency_for_check("dealsense")
+                    return status, latency, dealsense_label
+
+                check(dealsense_label, dealsense_runner)
+
+            if not self.active_profile.neo4j_bolt_uri and not self.active_profile.dealsense_url:
+                check(
+                    "No internal core services configured for this profile",
+                    immediate("No internal core services configured for this profile", "OK"),
+                )
+        else:
+            check(
+                "Service health delegated to enterprise Control API",
+                immediate("Service health delegated to enterprise Control API", "OK"),
+            )
+
+        phase("Observability")
+
+        def metrics_runner() -> tuple[str, int, str]:
+            _, elapsed = ensure_network()
+            status = "OK" if self.network_probe_results else "WARN"
+            return status, elapsed, "Public metrics/edge telemetry availability"
+
+        check("Public metrics/edge telemetry availability", metrics_runner)
+        check(
+            "Session log sink writable",
+            immediate(
+                "Session log sink writable",
+                "OK" if self.jobs_session_file else "WARN",
+            ),
+        )
+
+        phase("Deployment Integrity")
+
+        def deploy_specs_runner() -> tuple[str, int, str]:
+            elapsed = ensure_deploy_specs()
+            total = len(self.deploy_specs)
+            status = "OK" if total > 0 else "WARN"
+            return status, elapsed, f"Deploy target specs loaded ({total})"
+
+        def deploy_keys_runner() -> tuple[str, int, str]:
+            ensure_deploy_specs()
+            started = time.perf_counter()
+            states: list[str] = []
+            for spec in self.deploy_specs.values():
+                if not spec.ssh_key_path:
+                    states.append("WARN")
+                elif Path(spec.ssh_key_path).exists():
+                    states.append("OK")
+                else:
+                    states.append("FAIL")
+            elapsed = max(0, int((time.perf_counter() - started) * 1000))
+            status = self._rollup_status(states) if states else "WARN"
+            return status, elapsed, "Deploy SSH key paths validated"
+
+        def deploy_preflight_runner() -> tuple[str, int, str]:
+            started = time.perf_counter()
+            try:
+                specs, readiness, checked_at = self._collect_deploy_readiness()
+            except Exception as exc:
+                elapsed = max(0, int((time.perf_counter() - started) * 1000))
+                return "FAIL", elapsed, f"Deploy preflight cache warmup failed: {exc}"
+            self.deploy_specs = specs
+            self.deploy_readiness = readiness
+            self.deploy_readiness_last_refresh_at = checked_at
+            states = [item.status for item in readiness.values()]
+            status = self._rollup_status(states) if states else "WARN"
+            elapsed = max(0, int((time.perf_counter() - started) * 1000))
+            return status, elapsed, f"Deploy preflight cache ready ({len(readiness)} targets)"
+
+        check("Deploy target specs loaded", deploy_specs_runner)
+        check("Deploy SSH key paths validated", deploy_keys_runner)
+        check("Deploy preflight cache warmup", deploy_preflight_runner)
+
+        phase("Safety Gates")
+        if self.selected_postauth_state == AppState.OBSERVE:
+            check(
+                "Mode gate: OBSERVE (write locked)",
+                immediate("Mode gate: OBSERVE (write locked)", "OK"),
+            )
+        elif self.selected_postauth_state == AppState.MAINT:
+            check(
+                "Mode gate: MAINT (controlled writes enabled)",
+                immediate("Mode gate: MAINT (controlled writes enabled)", "OK"),
+            )
+        else:
+            check(
+                "Mode gate: SERVICE (write window enabled)",
+                immediate("Mode gate: SERVICE (write window enabled)", "OK"),
+            )
+        check(
+            "SERVICE arming guard",
+            immediate("SERVICE arming guard", "OK" if not self.service_confirm_required else "WARN"),
+        )
+        check(
+            "Role constraint policy loaded",
+            immediate(
+                "Role constraint policy loaded",
+                "OK" if self.session_role in {"viewer", "admin", "superadmin"} else "WARN",
+            ),
+        )
+
+        phase("Infrastructure (profile-dependent)")
+        check(
+            "AWS SDK availability",
+            immediate("AWS SDK availability", "OK" if self.aws_sdk_ready else "FAIL"),
+        )
+
+        def sso_bindings_runner() -> tuple[str, int, str]:
+            elapsed = ensure_sso_profiles()
+            if not self.aws_sso_profiles:
+                return "WARN", elapsed, "AWS SSO profile bindings"
+            return "OK", elapsed, f"AWS SSO profile bindings ({len(self.aws_sso_profiles)})"
+
+        check("AWS SSO profile bindings", sso_bindings_runner)
+
+        for profile in self._configured_aws_sso_profiles():
+
+            def profile_runner(profile_name: str = profile) -> tuple[str, int, str]:
+                ensure_sso_profiles()
+                started = time.perf_counter()
+                sso_status, detail = self._check_aws_sso_profile(profile_name)
+                elapsed = max(0, int((time.perf_counter() - started) * 1000))
+                mapped = self._boot_status_from_sso(sso_status)
+                self.aws_sso_status[profile_name] = {
+                    "status": sso_status,
+                    "detail": detail,
+                    "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                return mapped, elapsed, f"AWS SSO profile {profile_name} ({detail})"
+
+            check(f"AWS SSO profile {profile}", profile_runner)
+
+        return sequence
+
+    def _health_status_for_check(self, name: str) -> str:
+        lookup = name.strip().lower()
+        for item in self.health_results:
+            if item.name.strip().lower() == lookup:
+                value = item.status.value.upper()
+                if value in {"OK", "WARN", "FAIL"}:
+                    return value
+                return "WARN"
+        return "WARN"
+
+    def _health_latency_for_check(self, name: str) -> int:
+        lookup = name.strip().lower()
+        for item in self.health_results:
+            if item.name.strip().lower() == lookup:
+                return max(0, int(item.latency_ms))
+        return 0
+
+    @staticmethod
+    def _rollup_status(states: list[str]) -> str:
+        normalized = [item.strip().upper() for item in states if item]
+        if not normalized:
+            return "WARN"
+        if "FAIL" in normalized:
+            return "FAIL"
+        if "WARN" in normalized:
+            return "WARN"
+        return "OK"
+
+    @staticmethod
+    def _boot_status_from_sso(status: str) -> str:
+        value = status.strip().upper()
+        if value == "READY":
+            return "OK"
+        if value in {"EXPIRED", "UNKNOWN"}:
+            return "WARN"
+        return "FAIL"
 
     def _panel0_lines(self) -> list[str]:
         lines = [
@@ -2552,6 +3341,7 @@ class CashlyConsoleApp(App[None]):
                 ),
                 self._rule("-"),
                 f"  Name:         {detail.identity_name}",
+                f"  Region:       {detail.region}   AWS Profile: {detail.aws_profile}",
                 f"  Instance ID:  {detail.instance_id}",
                 f"  State:        {detail.state}",
                 f"  AZ:           {detail.availability_zone}",
@@ -2886,6 +3676,7 @@ class CashlyConsoleApp(App[None]):
             "",
             f"DEPLOY STATE: {self.deploy_state}",
             f"Current deployed SHA: {self.deploy_preview_current_sha}",
+            f"Latest merged PR: {self.deploy_preview_latest_pr}",
             f"Target SHA (default latest): {self.deploy_preview_target_sha}",
             f"Requested ref: {requested_ref}",
             f"Branch: {self.deploy_preview_branch}",
@@ -3280,6 +4071,12 @@ class CashlyConsoleApp(App[None]):
     def _sync_command_label(self) -> None:
         if self.logon_stage != LogonFlowStage.NONE:
             return
+        if self.aws_sso_login_running:
+            self._set_command_label(self._sso_loading_command_label("LOGIN"))
+            return
+        if self.aws_sso_status_loading:
+            self._set_command_label(self._sso_loading_command_label("STATUS"))
+            return
         if self.deploy_readiness_loading:
             self._set_command_label(self._loading_command_label())
             return
@@ -3300,6 +4097,12 @@ class CashlyConsoleApp(App[None]):
             self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
         ]
         return f"{self._command_prefix()} [PRECHECK {frame}] ===>"
+
+    def _sso_loading_command_label(self, phase: str) -> str:
+        frame = self.deploy_readiness_spinner_frames[
+            self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)
+        ]
+        return f"{self._command_prefix()} [SSO {phase} {frame}] ===>"
 
     def _set_command_mode(
         self,
@@ -3598,7 +4401,7 @@ def _service_idle_ttl_seconds() -> int:
 
 
 def _deploy_readiness_timeout_seconds() -> int:
-    raw = _runtime_env("CASHLYCTL_DEPLOY_PREFLIGHT_TIMEOUT_SEC", "10").strip()
+    raw = _runtime_env("CASHLYCTL_DEPLOY_PREFLIGHT_TIMEOUT_SEC", "20").strip()
     try:
         value = int(float(raw))
     except ValueError:
