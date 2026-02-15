@@ -2,9 +2,8 @@
 
 Terminal operations console and CLI for Cashly/DealSense deployments.
 
-This repository is the initial template for MVP-0 ("Feel & Flow"):
+This repository is the initial template for MVP-1:
 
-- z/OS-inspired panel structure with a command bar and PF key footer
 - Primary Option Menu and profile picker
 - Systems Status and Neo4j Console shell panels
 - Mocked health checks (OK/WARN/FAIL)
