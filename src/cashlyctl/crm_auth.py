@@ -8,6 +8,7 @@ import socket
 import time
 from typing import Callable
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 
@@ -18,6 +19,7 @@ from cashlyctl.runtime_env import runtime_env
 
 DEFAULT_CRM_BASE_URL = "https://crm.gocashly.io"
 CRM_DEVICE_SESSION_PATH = LOCAL_AUTH_DIR / "cashlycrm_device.json"
+HTTP_USER_AGENT = "cashlyctl/0.1"
 
 
 class CrmAuthError(RuntimeError):
@@ -113,7 +115,10 @@ def start_crm_pairing(
             base_url=resolved_base_url,
             device_code=str(data["device_code"]),
             user_code=str(data["user_code"]),
-            verification_uri=str(data["verification_uri"]),
+            verification_uri=_normalize_verification_uri(
+                str(data["verification_uri"]),
+                resolved_base_url,
+            ),
             expires_in=int(data.get("expires_in", 600)),
             interval=max(1, int(data.get("interval", 3))),
             scopes=[str(item) for item in data.get("scopes", []) if str(item).strip()],
@@ -315,13 +320,10 @@ def _post_json(
     token: str | None = None,
 ) -> tuple[int, dict[str, object]]:
     body = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         url,
         data=body,
-        headers=headers,
+        headers=_json_headers(token),
         method="POST",
     )
     return _open_json(request)
@@ -330,13 +332,21 @@ def _post_json(
 def _get_json(url: str, token: str) -> tuple[int, dict[str, object]]:
     request = urllib.request.Request(
         url,
-        headers={
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
+        headers=_json_headers(token),
         method="GET",
     )
     return _open_json(request)
+
+
+def _json_headers(token: str | None = None) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": HTTP_USER_AGENT,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _open_json(request: urllib.request.Request) -> tuple[int, dict[str, object]]:
@@ -366,7 +376,39 @@ def _error_message(data: dict[str, object], fallback: str) -> str:
     message = data.get("message")
     if isinstance(message, str) and message.strip():
         return message.strip()
+    title = data.get("title")
+    detail = data.get("detail")
+    if isinstance(title, str) and title.strip():
+        if isinstance(detail, str) and detail.strip():
+            return f"{title.strip()}: {detail.strip()}"
+        return title.strip()
+    error_name = data.get("error_name")
+    if isinstance(error_name, str) and error_name.strip():
+        return error_name.strip()
     return fallback
+
+
+def _normalize_verification_uri(verification_uri: str, base_url: str) -> str:
+    parsed = urllib.parse.urlparse(verification_uri)
+    base = urllib.parse.urlparse(crm_base_url(base_url))
+    if not parsed.scheme or not parsed.netloc:
+        return urllib.parse.urljoin(f"{base.scheme}://{base.netloc}", verification_uri)
+
+    if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return verification_uri
+    if base.hostname in {"localhost", "127.0.0.1", "::1"}:
+        return verification_uri
+
+    return urllib.parse.urlunparse(
+        (
+            base.scheme,
+            base.netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
 
 
 def _auto_open_enabled() -> bool:
