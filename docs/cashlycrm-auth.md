@@ -69,6 +69,14 @@ The macros panel queues scoped autodialer commands through the paired device tok
 
 A mounted CashlyCRM campaign calling tab polls for pending commands, runs the same action paths as the visible autodialer buttons, and acknowledges each command.
 
-The default planned host shortcut is `Ctrl+Shift+S`. Override the displayed binding with `CASHLYCTL_HOTKEY_NEXT_CONTACT` while we build the native hotkey companion.
+Default planned host shortcuts use plain Ctrl-letter combinations:
+
+- `CRM START`: `Ctrl+G`
+- `CRM NEXT CONTACT`: `Ctrl+N`
+- `CRM PAUSE`: `Ctrl+P`
+- `CRM RESUME`: `Ctrl+R`
+- `CRM STOP`: `Ctrl+X`
+
+Override the displayed bindings with `CASHLYCTL_HOTKEY_AUTODIALER_START`, `CASHLYCTL_HOTKEY_NEXT_CONTACT`, `CASHLYCTL_HOTKEY_AUTODIALER_PAUSE`, `CASHLYCTL_HOTKEY_AUTODIALER_RESUME`, and `CASHLYCTL_HOTKEY_AUTODIALER_STOP` while we build the native hotkey companion.
 
 This is the command path that future system-wide hotkeys should call.

@@ -4321,18 +4321,18 @@ class CashlyConsoleApp(App[None]):
         lines.extend(
             [
                 "  CRM STATUS",
-                f"  Default host shortcut: {next_contact_hotkey()} -> CRM NEXT CONTACT",
-                "  Other macro hotkeys are configurable through CASHLYCTL_HOTKEY_AUTODIALER_*.",
-            "",
-            "POLICY:",
-            f"  CRM macro gate: {self._style_text(macro_gate, gate_style)}",
-            "  Macros require a paired CashlyCRM browser/device session.",
-            "  Docker can dispatch commands, but native host runtime registers global hotkeys.",
-            "",
-            "CASHLYCRM DEVICE",
-            self._rule("-"),
-            f"  {self.crm_device_status}",
-            "",
+                f"  Next-contact shortcut: {next_contact_hotkey()} -> CRM NEXT CONTACT",
+                "  Macro hotkeys are configurable through CASHLYCTL_HOTKEY_* env vars.",
+                "",
+                "POLICY:",
+                f"  CRM macro gate: {self._style_text(macro_gate, gate_style)}",
+                "  Macros require a paired CashlyCRM browser/device session.",
+                "  Docker can dispatch commands, but native host runtime registers global hotkeys.",
+                "",
+                "CASHLYCRM DEVICE",
+                self._rule("-"),
+                f"  {self.crm_device_status}",
+                "",
             ]
         )
         if self.crm_macro_running:

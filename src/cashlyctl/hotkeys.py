@@ -3,7 +3,14 @@ from __future__ import annotations
 from cashlyctl.runtime_env import runtime_env
 
 
-DEFAULT_NEXT_CONTACT_HOTKEY = "Ctrl+Shift+S"
+DEFAULT_AUTODIALER_HOTKEYS = {
+    "start": "Ctrl+G",
+    "next-contact": "Ctrl+N",
+    "pause": "Ctrl+P",
+    "resume": "Ctrl+R",
+    "stop": "Ctrl+X",
+}
+DEFAULT_NEXT_CONTACT_HOTKEY = DEFAULT_AUTODIALER_HOTKEYS["next-contact"]
 UNASSIGNED_HOTKEY = "unassigned"
 
 _HOTKEY_ENV_KEYS = {
@@ -14,9 +21,7 @@ _HOTKEY_ENV_KEYS = {
     "stop": "CASHLYCTL_HOTKEY_AUTODIALER_STOP",
 }
 
-_HOTKEY_DEFAULTS = {
-    "next-contact": DEFAULT_NEXT_CONTACT_HOTKEY,
-}
+_HOTKEY_DEFAULTS = DEFAULT_AUTODIALER_HOTKEYS
 
 
 def next_contact_hotkey() -> str:

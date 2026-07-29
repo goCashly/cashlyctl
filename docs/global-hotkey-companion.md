@@ -47,9 +47,11 @@ Default hotkeys:
 
 ```toml
 [hotkeys]
-next_contact = "Ctrl+Shift+S"
-pause_campaign = "Ctrl+Alt+P"
-stop_campaign = "Ctrl+Alt+S"
+autodialer_start = "Ctrl+G"
+next_contact = "Ctrl+N"
+autodialer_pause = "Ctrl+P"
+autodialer_resume = "Ctrl+R"
+autodialer_stop = "Ctrl+X"
 ```
 
 The shortcuts must be user-configurable because OS and desktop environments can reserve or reject specific combinations.

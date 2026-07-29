@@ -122,6 +122,6 @@ Try:
   cashlyctl hotkeys status
 
 If '$bin_dir' is not on PATH, add it to your shell profile.
-For Linux desktop shortcut fallback, bind Ctrl+Shift+S to:
+For Linux desktop shortcut fallback, bind Ctrl+N to:
   $launcher crm next-contact
 EOF

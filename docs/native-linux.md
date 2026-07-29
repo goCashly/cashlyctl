@@ -78,13 +78,17 @@ The paired CRM device token is stored under `~/.cashlyctl/auth/`.
 
 The native hotkey daemon is the next implementation phase. Until then, Linux desktop environments can bind a global shortcut to the installed command.
 
-Suggested binding:
+Suggested bindings:
 
 ```text
-Ctrl+Shift+S
+Ctrl+G  -> cashlyctl crm start
+Ctrl+N  -> cashlyctl crm next-contact
+Ctrl+P  -> cashlyctl crm pause
+Ctrl+R  -> cashlyctl crm resume
+Ctrl+X  -> cashlyctl crm stop
 ```
 
-Suggested command:
+Suggested next-contact command:
 
 ```bash
 ~/.local/bin/cashlyctl crm next-contact
