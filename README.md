@@ -68,8 +68,17 @@ The manual installer creates a user-local venv under
 
 ## Native Windows
 
-Windows packaging lives under `packaging/windows/`. From a Windows machine with
-Python 3.11+:
+Download the latest unsigned Windows installer built from the
+`cashlyctl-windows` branch:
+
+[Download CashlyCTLSetup-latest.exe](https://github.com/goCashly/cashlyctl/releases/download/windows-latest/CashlyCTLSetup-latest.exe)
+
+If the release asset is not available yet, check the latest branch build:
+
+[Windows installer builds](https://github.com/goCashly/cashlyctl/actions/workflows/windows-installer.yml?query=branch%3Acashlyctl-windows)
+
+Windows packaging lives under `packaging/windows/`. To build it yourself from a
+Windows machine with Python 3.11+:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1

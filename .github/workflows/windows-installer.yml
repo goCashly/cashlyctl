@@ -1,0 +1,95 @@
+name: Windows Installer
+
+on:
+  push:
+    branches:
+      - cashlyctl-windows
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          $InnoPath = "${env:ProgramFiles(x86)}\Inno Setup 6"
+          if (Test-Path $InnoPath) {
+            Add-Content -Path $env:GITHUB_PATH -Value $InnoPath
+          }
+
+      - name: Build executable and installer
+        shell: pwsh
+        run: |
+          .\packaging\windows\build.ps1
+
+      - name: Prepare stable installer filename
+        shell: pwsh
+        run: |
+          $Installer = Get-ChildItem -Path "dist\installer" -Filter "CashlyCTLSetup-*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $Installer) {
+            throw "CashlyCTL Windows installer was not produced."
+          }
+          Copy-Item -Path $Installer.FullName -Destination "dist\installer\CashlyCTLSetup-latest.exe" -Force
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CashlyCTL-Windows-Installer
+          path: |
+            dist/installer/CashlyCTLSetup-*.exe
+          if-no-files-found: error
+
+      - name: Publish latest branch installer
+        if: github.repository == 'goCashly/cashlyctl' && github.ref == 'refs/heads/cashlyctl-windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag -f windows-latest $env:GITHUB_SHA
+          git push --force origin refs/tags/windows-latest
+
+          $Notes = @"
+          Latest unsigned Windows installer built from the cashlyctl-windows branch.
+
+          Commit: $env:GITHUB_SHA
+
+          Download CashlyCTLSetup-latest.exe, run it, then open Windows Terminal and run:
+
+              cashlyctl console
+          "@
+
+          gh release view windows-latest *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create windows-latest `
+              "dist\installer\CashlyCTLSetup-latest.exe" `
+              --title "CashlyCTL Windows Latest" `
+              --notes "$Notes" `
+              --prerelease `
+              --target "$env:GITHUB_SHA"
+          }
+          else {
+            gh release edit windows-latest `
+              --title "CashlyCTL Windows Latest" `
+              --notes "$Notes" `
+              --prerelease
+            gh release upload windows-latest `
+              "dist\installer\CashlyCTLSetup-latest.exe" `
+              --clobber
+          }

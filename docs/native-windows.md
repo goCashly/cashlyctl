@@ -18,6 +18,16 @@ cashlyctl crm stop
 
 The terminal window can be minimized while `cashlyctl hotkeys start` is running. CashlyCRM can be inactive or minimized as long as the paired, logged-in browser session is still open and polling commands.
 
+## Download
+
+Download the latest unsigned installer built from the `cashlyctl-windows` branch:
+
+[CashlyCTLSetup-latest.exe](https://github.com/goCashly/cashlyctl/releases/download/windows-latest/CashlyCTLSetup-latest.exe)
+
+If that link has not been published yet, use the latest GitHub Actions artifact:
+
+[Windows installer builds](https://github.com/goCashly/cashlyctl/actions/workflows/windows-installer.yml?query=branch%3Acashlyctl-windows)
+
 ## User Install Flow
 
 After installing:
