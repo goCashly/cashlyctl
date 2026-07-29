@@ -9,7 +9,7 @@
 AppId={{78BA0C15-7D5B-4F54-A713-1A1908AD9BB1}
 AppName=CashlyCTL
 AppVersion={#MyAppVersion}
-AppPublisher=Cashly Inc.
+AppPublisher=Cashly Tech Services Inc.
 AppPublisherURL=https://gocashly.io
 DefaultDirName={localappdata}\Programs\CashlyCTL
 DefaultGroupName=CashlyCTL

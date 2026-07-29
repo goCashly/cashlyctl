@@ -251,4 +251,4 @@ See [SECURITY.md](SECURITY.md). Report vulnerabilities privately to security@goc
 
 ## License
 
-Copyright (c) 2026 Cashly Inc. See [LICENSE](LICENSE).
+Copyright (c) 2026 Cashly Tech Services Inc. See [LICENSE](LICENSE).

@@ -2724,7 +2724,7 @@ class CashlyConsoleApp(App[None]):
             "",
             *styled_logo_lines,
             "",
-            self._center("System Customization - Cashly Inc.*"),
+            self._center("System Customization - Cashly Tech Services Inc.*"),
             "",
             *signon_lines,
             "",
