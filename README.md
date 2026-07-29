@@ -38,6 +38,7 @@ cashlyctl crm pause
 cashlyctl crm resume
 cashlyctl crm stop
 cashlyctl hotkeys status
+cashlyctl hotkeys start --dry-run
 ```
 
 ## Native Linux
@@ -61,9 +62,22 @@ cashlyctl system inspect-host
 cashlyctl hotkeys status
 ```
 
-Until the AUR package is live, use the manual installer. It creates a
-user-local venv under `~/.local/share/cashlyctl` and a launcher at
-`~/.local/bin/cashlyctl`. See [Native Linux](docs/native-linux.md).
+The manual installer creates a user-local venv under
+`~/.local/share/cashlyctl` and a launcher at `~/.local/bin/cashlyctl`. See
+[Native Linux](docs/native-linux.md).
+
+## Native Windows
+
+Windows packaging lives under `packaging/windows/`. From a Windows machine with
+Python 3.11+:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+```
+
+The installer adds `cashlyctl.exe` to the user PATH, creates Start Menu
+shortcuts, and can optionally start the Windows hotkey helper at login. See
+[Native Windows](docs/native-windows.md).
 
 ## Docker
 
@@ -82,10 +96,12 @@ See [Docker](docs/docker.md) for persistent state, env-file, and networking note
 - [Global hotkey companion](docs/global-hotkey-companion.md): authenticated system-wide hotkeys for CashlyCRM workflows, host OS detection, and Docker packaging strategy.
 - [CashlyCRM auth pairing](docs/cashlycrm-auth.md): browser-approved device auth for local CashlyCTL installs.
 - [Native Linux](docs/native-linux.md): user-local Linux installer and desktop shortcut fallback.
+- [Native Windows](docs/native-windows.md): Windows global hotkey helper and single-installer packaging.
 
 ## Local State
 
-`cashlyctl` stores files under `~/.cashlyctl/`:
+`cashlyctl` stores files under `~/.cashlyctl/` on Linux/macOS and
+`%LOCALAPPDATA%\CashlyCTL\` on Windows:
 
 - `config.toml`
 - `catalog/`
@@ -97,7 +113,7 @@ On first run, it creates a starter config with local and remote profile examples
 
 ## Login Credentials
 
-Local console users are stored under `~/.cashlyctl/auth/local_users.json` as salted password hashes. On first run, create the local admin from inside the console:
+Local console users are stored under `auth/local_users.json` as salted password hashes. On first run, create the local admin from inside the console:
 
 - `INITADMIN`
 - `INITADMIN <username>`

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 import tomllib
-from pathlib import Path
 
 from cashlyctl.models import AppConfig, DeploymentMode, Environment, Profile
+from cashlyctl.paths import default_app_home
 
 
-APP_HOME = Path(os.getenv("CASHLYCTL_HOME", Path.home() / ".cashlyctl"))
+APP_HOME = default_app_home()
 CONFIG_PATH = APP_HOME / "config.toml"
 CATALOG_DIR = APP_HOME / "catalog"
 QUERIES_DIR = APP_HOME / "queries"

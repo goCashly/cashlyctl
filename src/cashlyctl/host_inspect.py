@@ -210,7 +210,7 @@ def _hotkey_guidance(
                 "wayland_portal",
                 [
                     "Wayland restricts global keyboard capture; use portal support when available.",
-                    "If portal support is unavailable, bind desktop shortcuts to cashlyctl campaign commands.",
+                    "If portal support is unavailable, bind desktop shortcuts to cashlyctl crm commands.",
                 ],
             )
         if session_type in {"ssh", "headless"}:

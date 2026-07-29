@@ -31,14 +31,14 @@ The clean implementation is not browser key injection. `cashlyctl` should become
 Primary commands:
 
 ```bash
-cashlyctl pair
+cashlyctl crm pair
 cashlyctl hotkeys start
 cashlyctl hotkeys status
 cashlyctl hotkeys stop
 cashlyctl hotkeys doctor
-cashlyctl campaign next-contact
-cashlyctl campaign pause
-cashlyctl campaign stop
+cashlyctl crm next-contact
+cashlyctl crm pause
+cashlyctl crm stop
 cashlyctl system inspect-host
 cashlyctl system inspect-host --json
 ```
@@ -134,7 +134,7 @@ Common ignored/rejected reasons:
 Use a browser pairing flow instead of collecting CRM credentials in the terminal.
 
 ```text
-1. User runs: cashlyctl pair
+1. User runs: cashlyctl crm pair
 2. CLI requests a device code from crm.gocashly.io.
 3. CLI displays a URL and short code.
 4. User approves in an already authenticated browser session.
@@ -249,7 +249,7 @@ Backend matrix:
 | macOS | Native packaged helper or accessibility-approved listener | User may need Accessibility/Input Monitoring approval depending on implementation and shortcut type. |
 | Linux X11 | X11 global shortcut registration | Requires active X session and `DISPLAY`. |
 | Linux Wayland | Desktop portal when available | Support varies by compositor and desktop environment. |
-| Linux Wayland fallback | User-configured desktop shortcut | Most reliable fallback: bind the desktop shortcut to `cashlyctl campaign next-contact`. |
+| Linux Wayland fallback | User-configured desktop shortcut | Most reliable fallback: bind the desktop shortcut to `cashlyctl crm next-contact`. |
 | Docker container | No direct host hotkeys | Use native host companion, desktop shortcut invoking Docker, or single-shot command dispatch. |
 
 For MVP speed, a Python listener library can prove the command loop. For production, prefer native global shortcut registration over raw keyboard monitoring so the process behaves like a shortcut owner, not a key capture tool.
@@ -262,8 +262,8 @@ Supported Docker use cases:
 
 ```bash
 docker run --rm ghcr.io/cashly/cashlyctl:latest health
-docker run --rm -it -v cashlyctl-state:/home/cashly/.cashlyctl ghcr.io/cashly/cashlyctl:latest pair
-docker run --rm -v cashlyctl-state:/home/cashly/.cashlyctl ghcr.io/cashly/cashlyctl:latest campaign next-contact
+docker run --rm -it -v cashlyctl-state:/home/cashly/.cashlyctl ghcr.io/cashly/cashlyctl:latest crm pair
+docker run --rm -v cashlyctl-state:/home/cashly/.cashlyctl ghcr.io/cashly/cashlyctl:latest crm next-contact
 docker run --rm ghcr.io/cashly/cashlyctl:latest system inspect-host
 ```
 
@@ -285,7 +285,7 @@ Recommended packaging model:
 
 - Native install for `cashlyctl hotkeys start`.
 - Docker install for operational commands, CI, pairing validation, and emergency command dispatch.
-- Optional desktop shortcut fallback that invokes either native `cashlyctl campaign next-contact` or a Dockerized single-shot command.
+- Optional desktop shortcut fallback that invokes either native `cashlyctl crm next-contact` or a Dockerized single-shot command.
 
 ## Data Model
 
@@ -325,16 +325,16 @@ Avoid storing raw access tokens. Store token hashes, public keys, or encrypted r
 
 ### Phase 1: Command Dispatch Without Hotkeys
 
-- Add `cashlyctl pair`.
+- Add `cashlyctl crm pair`.
 - Add token storage.
-- Add `cashlyctl campaign next-contact`.
+- Add `cashlyctl crm next-contact`.
 - Add server command broker endpoint.
 - Add browser receiver and acknowledgement.
 - Wire `campaign.next_contact` to the existing campaign skip action.
 
 Acceptance:
 
-- Running `cashlyctl campaign next-contact` advances the active browser campaign session.
+- Running `cashlyctl crm next-contact` advances the active browser campaign session.
 - Command is ignored with a clear reason when no campaign is active.
 - Command audit records exist.
 
@@ -353,7 +353,7 @@ Acceptance:
 
 ### Phase 3: Native Hotkey Backends
 
-- Implement Windows backend.
+- Implement Windows backend with `RegisterHotKey`.
 - Implement macOS backend with clear permission diagnostics.
 - Implement Linux X11 backend.
 - Implement Linux Wayland portal or detect unsupported portal state.

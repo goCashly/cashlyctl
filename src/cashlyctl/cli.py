@@ -29,7 +29,12 @@ from cashlyctl.crm_auth import (
 )
 from cashlyctl.health import run_mvp_checks
 from cashlyctl.host_inspect import format_host_inspection, inspect_host
-from cashlyctl.hotkeys import autodialer_macro_hotkey, next_contact_hotkey
+from cashlyctl.hotkeys import autodialer_macro_hotkey
+from cashlyctl.windows_hotkeys import (
+    WindowsHotkeyError,
+    configured_windows_hotkey_bindings,
+    run_windows_hotkey_listener,
+)
 
 
 app = typer.Typer(help="cashlyctl operations console and CLI")
@@ -241,12 +246,69 @@ def hotkeys_status() -> None:
     typer.echo(f"containerized={str(report.is_container).lower()}")
 
 
+@hotkeys_app.command("start")
+def hotkeys_start(
+    backend: str = typer.Option("auto", "--backend", help="Hotkey backend: auto or windows."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print bindings without registering them."),
+    minimize_console: bool = typer.Option(
+        False,
+        "--minimize-console",
+        help="Minimize the console window after Windows hotkeys are registered.",
+    ),
+) -> None:
+    """Start the native hotkey helper."""
+    report = inspect_host()
+    selected_backend = backend.strip().lower()
+    if selected_backend == "auto":
+        selected_backend = (
+            "windows" if report.recommended_backend == "windows" else report.recommended_backend
+        )
+
+    if selected_backend not in {"windows"}:
+        if dry_run:
+            _print_windows_hotkey_bindings()
+            return
+        typer.echo(format_host_inspection(report))
+        raise typer.BadParameter(
+            "The native cashlyctl hotkey listener is implemented for Windows first. "
+            "Use desktop shortcut bindings on Linux/Wayland for now."
+        )
+
+    if dry_run:
+        _print_windows_hotkey_bindings()
+        return
+
+    typer.echo("cashlyctl_windows_hotkeys=starting")
+    try:
+        run_windows_hotkey_listener(minimize_console=minimize_console, emit=typer.echo)
+    except WindowsHotkeyError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@hotkeys_app.command("stop")
+def hotkeys_stop() -> None:
+    """Explain how to stop the foreground hotkey helper."""
+    typer.echo("managed_daemon=false")
+    typer.echo("Stop a running foreground helper with Ctrl+C or by closing its window.")
+    typer.echo("If installed as a startup shortcut, disable CashlyCTL Hotkeys in Windows Startup Apps.")
+
+
 @hotkeys_app.command("doctor")
 def hotkeys_doctor() -> None:
     """Explain whether this runtime can register system-wide hotkeys."""
     report = inspect_host()
-    typer.echo(f"next_contact={next_contact_hotkey()}")
+    for spec in autodialer_macro_specs():
+        key = spec.action.replace("-", "_")
+        typer.echo(f"{key}={autodialer_macro_hotkey(spec.action)}")
     typer.echo(format_host_inspection(report))
+
+
+def _print_windows_hotkey_bindings() -> None:
+    for binding in configured_windows_hotkey_bindings():
+        typer.echo(
+            f"{binding.action}={binding.accelerator} command={binding.command} "
+            f"vk={binding.virtual_key}"
+        )
 
 
 def _require_local_admin_auth() -> tuple[str, str]:

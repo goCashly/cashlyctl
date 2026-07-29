@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from cashlyctl.paths import default_app_home
+
 
 ENV_FILE_ENV = "CASHLYCTL_ENV_FILE"
 
@@ -45,7 +47,7 @@ def runtime_env_file_candidates() -> list[Path]:
     if explicit:
         return [_expand_path(explicit)]
 
-    app_home = _expand_path(os.getenv("CASHLYCTL_HOME", str(Path.home() / ".cashlyctl")))
+    app_home = default_app_home()
     candidates = [
         app_home / ".env",
         Path("/app/.env"),
