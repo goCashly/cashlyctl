@@ -59,7 +59,15 @@ The server stores only hashed device tokens. The raw token is shown to CashlyCTL
 
 ## Next-contact macro
 
-`CRM NEXT CONTACT` queues an `autodialer.next_contact` command through the paired device token. A running CashlyCRM campaign calling tab polls for pending commands, skips the active contact, starts the next contact, and acknowledges the command.
+The macros panel queues scoped autodialer commands through the paired device token:
+
+- `CRM START`
+- `CRM NEXT CONTACT`
+- `CRM PAUSE`
+- `CRM RESUME`
+- `CRM STOP`
+
+A mounted CashlyCRM campaign calling tab polls for pending commands, runs the same action paths as the visible autodialer buttons, and acknowledges each command.
 
 The default planned host shortcut is `Ctrl+Shift+S`. Override the displayed binding with `CASHLYCTL_HOTKEY_NEXT_CONTACT` while we build the native hotkey companion.
 

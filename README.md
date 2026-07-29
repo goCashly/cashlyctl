@@ -32,7 +32,11 @@ cashlyctl health --profile local-dev
 cashlyctl system inspect-host
 cashlyctl crm pair
 cashlyctl crm whoami
+cashlyctl crm start
 cashlyctl crm next-contact
+cashlyctl crm pause
+cashlyctl crm resume
+cashlyctl crm stop
 cashlyctl hotkeys status
 ```
 

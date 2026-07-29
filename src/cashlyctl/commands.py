@@ -32,6 +32,7 @@ class CommandKind(StrEnum):
     CRM_PAIR = "CRM_PAIR"
     CRM_STATUS = "CRM_STATUS"
     CRM_NEXT = "CRM_NEXT"
+    CRM_MACRO = "CRM_MACRO"
     SAVE_QRY = "SAVE_QRY"
     NUMBER = "NUMBER"
     RAW = "RAW"
@@ -119,13 +120,62 @@ def parse_command(text: str) -> ParsedCommand:
     if upper in {
         "CRM NEXT",
         "CRM NEXT CONTACT",
+        "CRM SKIP",
+        "CRM SKIP CONTACT",
         "CASHLYCRM NEXT",
         "CASHLYCRM NEXT CONTACT",
+        "CASHLYCRM SKIP",
+        "CASHLYCRM SKIP CONTACT",
         "MACRO NEXT",
         "MACRO NEXT CONTACT",
+        "MACRO SKIP",
+        "MACRO SKIP CONTACT",
         "NEXT CONTACT",
+        "SKIP CONTACT",
     }:
         return ParsedCommand(kind=CommandKind.CRM_NEXT, raw=text)
+    crm_macro_aliases = {
+        "CRM START": "start",
+        "CRM START AUTODIALER": "start",
+        "CASHLYCRM START": "start",
+        "CASHLYCRM START AUTODIALER": "start",
+        "MACRO START": "start",
+        "MACRO START AUTODIALER": "start",
+        "AUTODIALER START": "start",
+        "START AUTODIALER": "start",
+        "CRM PAUSE": "pause",
+        "CRM PAUSE AUTODIALER": "pause",
+        "CASHLYCRM PAUSE": "pause",
+        "CASHLYCRM PAUSE AUTODIALER": "pause",
+        "MACRO PAUSE": "pause",
+        "MACRO PAUSE AUTODIALER": "pause",
+        "AUTODIALER PAUSE": "pause",
+        "PAUSE AUTODIALER": "pause",
+        "CRM RESUME": "resume",
+        "CRM RESUME AUTODIALER": "resume",
+        "CASHLYCRM RESUME": "resume",
+        "CASHLYCRM RESUME AUTODIALER": "resume",
+        "MACRO RESUME": "resume",
+        "MACRO RESUME AUTODIALER": "resume",
+        "AUTODIALER RESUME": "resume",
+        "RESUME AUTODIALER": "resume",
+        "CRM STOP": "stop",
+        "CRM STOP AUTODIALER": "stop",
+        "CASHLYCRM STOP": "stop",
+        "CASHLYCRM STOP AUTODIALER": "stop",
+        "MACRO STOP": "stop",
+        "MACRO STOP AUTODIALER": "stop",
+        "AUTODIALER STOP": "stop",
+        "STOP AUTODIALER": "stop",
+    }
+    if upper in crm_macro_aliases:
+        return ParsedCommand(kind=CommandKind.CRM_MACRO, raw=text, value=crm_macro_aliases[upper])
+    if upper == "CRM MACRO" or upper == "CASHLYCRM MACRO":
+        return ParsedCommand(kind=CommandKind.CRM_MACRO, raw=text, value="")
+    if upper.startswith("CRM MACRO "):
+        return ParsedCommand(kind=CommandKind.CRM_MACRO, raw=text, value=raw[10:].strip())
+    if upper.startswith("CASHLYCRM MACRO "):
+        return ParsedCommand(kind=CommandKind.CRM_MACRO, raw=text, value=raw[16:].strip())
     if upper == "CRM PAIR" or upper.startswith("CRM PAIR "):
         return ParsedCommand(kind=CommandKind.CRM_PAIR, raw=text, value=raw[8:].strip())
     if upper == "CASHLYCRM PAIR" or upper.startswith("CASHLYCRM PAIR "):

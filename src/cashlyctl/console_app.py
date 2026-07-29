@@ -49,12 +49,14 @@ from cashlyctl.config import (
 )
 from cashlyctl.crm_auth import (
     CrmAuthError,
+    autodialer_macro_spec,
+    autodialer_macro_specs,
     attempt_open_pairing_url,
     default_device_label,
     load_crm_device_session,
     poll_crm_pairing,
     save_crm_device_session,
-    send_next_contact_macro,
+    send_autodialer_macro,
     start_crm_pairing,
     verify_crm_device_session,
 )
@@ -72,7 +74,7 @@ from cashlyctl.deployments import (
 )
 from cashlyctl.health import run_mvp_checks
 from cashlyctl.host_inspect import HostInspection, inspect_host
-from cashlyctl.hotkeys import next_contact_hotkey
+from cashlyctl.hotkeys import autodialer_macro_hotkey, next_contact_hotkey
 from cashlyctl.models import DeploymentMode, Environment, HealthCheckResult, Profile
 from cashlyctl.network_probe import NetworkProbeResult, NetworkProbeTarget, probe_targets
 from cashlyctl.runtime_env import runtime_env
@@ -418,7 +420,7 @@ class CashlyConsoleApp(App[None]):
         self._record_activity()
         self._set_job_status("SHOWING HELP...")
         self._set_status(
-            "HELP: INITADMIN, LOGON, LOGOFF, SET STATE <observe|maint|service>, CRM PAIR (MAINT), CRM STATUS, CRM NEXT CONTACT, SSO STATUS, SSO LOGIN <profile|ALL>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY (preview), CONFIRM DEPLOY ..., ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
+            "HELP: INITADMIN, LOGON, LOGOFF, SET STATE <observe|maint|service>, CRM PAIR, CRM STATUS, CRM START/NEXT/PAUSE/RESUME/STOP, SSO STATUS, SSO LOGIN <profile|ALL>, SERVICE ON, PROCEED <target>, =0..=8, EXIT, REFRESH, PROFILE, SET ENV, TAIL, DETAIL, DEPLOY (preview), CONFIRM DEPLOY ..., ROLLBACK, STATUS DEPLOY, DIFF, PLAN, SAVE QRY",
             "ok",
         )
         self._set_job_status("HELP READY")
@@ -638,7 +640,10 @@ class CashlyConsoleApp(App[None]):
             self._handle_crm_status()
             return
         if parsed.kind == CommandKind.CRM_NEXT:
-            self._handle_crm_next_contact()
+            self._handle_crm_autodialer_macro("next-contact")
+            return
+        if parsed.kind == CommandKind.CRM_MACRO:
+            self._handle_crm_autodialer_macro(parsed.value)
             return
         if parsed.kind == CommandKind.MENU_ROOT:
             self._goto_panel("0")
@@ -1099,13 +1104,20 @@ class CashlyConsoleApp(App[None]):
             self._set_status("INVALID PAIRING OPTION. USE 1 OR 2.", "warn")
             return
         if self.panel == "8B":
-            if value == "1":
-                self._handle_crm_next_contact()
+            macro_by_number = {
+                str(index): spec.action
+                for index, spec in enumerate(autodialer_macro_specs(), start=1)
+            }
+            if value in macro_by_number:
+                self._handle_crm_autodialer_macro(macro_by_number[value])
                 return
-            if value == "2":
+            if value == str(len(macro_by_number) + 1):
                 self._handle_crm_status()
                 return
-            self._set_status("INVALID MACROS OPTION. USE 1 OR 2.", "warn")
+            self._set_status(
+                f"INVALID MACROS OPTION. USE 1-{len(macro_by_number) + 1}.",
+                "warn",
+            )
             return
         self._set_status(f"NO NUMERIC ACTION ON PANEL {self.panel}", "warn")
 
@@ -1786,12 +1798,21 @@ class CashlyConsoleApp(App[None]):
         self._render()
 
     def _handle_crm_next_contact(self) -> None:
+        self._handle_crm_autodialer_macro("next-contact")
+
+    def _handle_crm_autodialer_macro(self, action: str) -> None:
         if self.selected_postauth_state == AppState.OBSERVE:
             self._set_job_status("CRM MACRO BLOCKED")
             self._set_status("CRM MACROS REQUIRE MAINT MODE. USE SET STATE MAINT.", "error")
             return
         if self.crm_macro_running:
             self._set_status("CRM MACRO ALREADY RUNNING", "warn")
+            return
+        try:
+            spec = autodialer_macro_spec(action)
+        except ValueError as exc:
+            self._set_job_status("CRM MACRO INVALID")
+            self._set_status(str(exc), "error")
             return
 
         self.crm_macro_seq += 1
@@ -1802,22 +1823,23 @@ class CashlyConsoleApp(App[None]):
         self.crm_macro_lines = [
             "CRM MACRO STARTED",
             f"LOCAL USER: {self.session_user}  ROLE: {self.session_role.upper()}  MODE: MAINT",
-            "Queuing autodialer next-contact command...",
+            f"MACRO: {spec.label}",
+            f"Queuing {spec.command_type} command...",
         ]
         self._goto_panel("8B")
         self._set_job_status("CRM MACRO RUNNING", render_now=False)
-        self._set_status("CRM NEXT CONTACT QUEUEING", "warn")
+        self._set_status(f"{spec.command} QUEUEING", "warn")
         self._render()
         self.refresh()
         threading.Thread(
-            target=self._crm_next_contact_worker,
-            args=(seq,),
+            target=self._crm_autodialer_macro_worker,
+            args=(seq, spec.action),
             daemon=True,
         ).start()
 
-    def _crm_next_contact_worker(self, seq: int) -> None:
+    def _crm_autodialer_macro_worker(self, seq: int, action: str) -> None:
         try:
-            command = send_next_contact_macro()
+            command = send_autodialer_macro(action)
             self.call_from_thread(
                 self._finish_crm_macro,
                 seq,
@@ -4213,7 +4235,7 @@ class CashlyConsoleApp(App[None]):
             "",
             "COMMANDS:",
             "  1 | 2",
-            "  CRM PAIR [base_url] | CRM STATUS | CRM NEXT CONTACT",
+            "  CRM PAIR [base_url] | CRM STATUS | CRM START/NEXT/PAUSE/RESUME/STOP",
             "",
             "CASHLYCRM DEVICE",
             self._rule("-"),
@@ -4278,17 +4300,29 @@ class CashlyConsoleApp(App[None]):
         state_mode = self.selected_postauth_state.value
         macro_gate = "ALLOW" if self.selected_postauth_state != AppState.OBSERVE else "MAINT REQUIRED"
         gate_style = "bold #00ff00" if macro_gate == "ALLOW" else "bold #ffd700"
+        specs = autodialer_macro_specs()
         lines = [
             self._line_lr("PANEL: 8B  MACROS", f"MODE: {state_mode}"),
             self._rule("="),
             "",
-            f"  1  Next Contact        HOTKEY: {next_contact_hotkey()}",
-            "  2  CashlyCRM Device Status",
-            "",
-            "COMMANDS:",
-            "  CRM NEXT CONTACT",
-            "  CRM STATUS",
-            f"  Planned host shortcut: {next_contact_hotkey()}",
+        ]
+        for index, spec in enumerate(specs, start=1):
+            lines.append(
+                f"  {index:<2} {spec.label:<19} HOTKEY: {autodialer_macro_hotkey(spec.action)}"
+            )
+        lines.extend(
+            [
+                f"  {len(specs) + 1:<2} CashlyCRM Device Status",
+                "",
+                "COMMANDS:",
+            ]
+        )
+        lines.extend(f"  {spec.command}" for spec in specs)
+        lines.extend(
+            [
+                "  CRM STATUS",
+                f"  Default host shortcut: {next_contact_hotkey()} -> CRM NEXT CONTACT",
+                "  Other macro hotkeys are configurable through CASHLYCTL_HOTKEY_AUTODIALER_*.",
             "",
             "POLICY:",
             f"  CRM macro gate: {self._style_text(macro_gate, gate_style)}",
@@ -4299,7 +4333,8 @@ class CashlyConsoleApp(App[None]):
             self._rule("-"),
             f"  {self.crm_device_status}",
             "",
-        ]
+            ]
+        )
         if self.crm_macro_running:
             frame = self.deploy_readiness_spinner_frames[
                 self.deploy_readiness_spinner_index % len(self.deploy_readiness_spinner_frames)

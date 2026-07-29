@@ -64,9 +64,56 @@ class CrmDeviceCommand:
     expires_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class AutodialerMacroSpec:
+    action: str
+    command_type: str
+    label: str
+    command: str
+
+
+AUTODIALER_MACRO_SPECS: tuple[AutodialerMacroSpec, ...] = (
+    AutodialerMacroSpec("start", "autodialer.start", "Start Autodialer", "CRM START"),
+    AutodialerMacroSpec(
+        "next-contact",
+        "autodialer.next_contact",
+        "Next Contact",
+        "CRM NEXT CONTACT",
+    ),
+    AutodialerMacroSpec("pause", "autodialer.pause", "Pause Autodialer", "CRM PAUSE"),
+    AutodialerMacroSpec("resume", "autodialer.resume", "Resume Autodialer", "CRM RESUME"),
+    AutodialerMacroSpec("stop", "autodialer.stop", "Stop Autodialer", "CRM STOP"),
+)
+
+_AUTODIALER_MACRO_ALIASES = {
+    "begin": "start",
+    "next": "next-contact",
+    "next_contact": "next-contact",
+    "next contact": "next-contact",
+    "skip": "next-contact",
+    "skip-contact": "next-contact",
+    "skip_contact": "next-contact",
+    "halt": "stop",
+}
+
+
 def crm_base_url(value: str | None = None) -> str:
     raw = (value or runtime_env("CASHLYCTL_CRM_BASE_URL", DEFAULT_CRM_BASE_URL)).strip()
     return raw.rstrip("/") or DEFAULT_CRM_BASE_URL
+
+
+def autodialer_macro_specs() -> tuple[AutodialerMacroSpec, ...]:
+    return AUTODIALER_MACRO_SPECS
+
+
+def autodialer_macro_spec(action: str) -> AutodialerMacroSpec:
+    raw = action.strip().lower()
+    key = raw.replace("_", "-")
+    key = _AUTODIALER_MACRO_ALIASES.get(key, key)
+    for spec in AUTODIALER_MACRO_SPECS:
+        if raw == spec.command_type or key == spec.action:
+            return spec
+    raise ValueError(f"Unsupported autodialer macro: {action}")
 
 
 def default_device_label() -> str:
@@ -276,9 +323,17 @@ def send_crm_device_command(
 
 
 def send_next_contact_macro(session: CrmDeviceSession | None = None) -> CrmDeviceCommand:
+    return send_autodialer_macro("next-contact", session=session)
+
+
+def send_autodialer_macro(
+    action: str,
+    session: CrmDeviceSession | None = None,
+) -> CrmDeviceCommand:
+    spec = autodialer_macro_spec(action)
     return send_crm_device_command(
-        "autodialer.next_contact",
-        {"source": "cashlyctl", "macro": "next_contact"},
+        spec.command_type,
+        {"source": "cashlyctl", "macro": spec.action.replace("-", "_")},
         session=session,
     )
 

@@ -16,19 +16,20 @@ from cashlyctl.config import load_config
 from cashlyctl.console_app import CashlyConsoleApp
 from cashlyctl.crm_auth import (
     CrmAuthError,
+    autodialer_macro_specs,
     attempt_open_pairing_url,
     default_device_label,
     forget_crm_device_session,
     load_crm_device_session,
     poll_crm_pairing,
     save_crm_device_session,
-    send_next_contact_macro,
+    send_autodialer_macro,
     start_crm_pairing,
     verify_crm_device_session,
 )
 from cashlyctl.health import run_mvp_checks
 from cashlyctl.host_inspect import format_host_inspection, inspect_host
-from cashlyctl.hotkeys import next_contact_hotkey
+from cashlyctl.hotkeys import autodialer_macro_hotkey, next_contact_hotkey
 
 
 app = typer.Typer(help="cashlyctl operations console and CLI")
@@ -180,8 +181,44 @@ def crm_status() -> None:
 @crm_app.command("next-contact")
 def crm_next_contact() -> None:
     """Queue the autodialer next-contact macro for the paired CashlyCRM browser."""
+    _queue_crm_macro("next-contact")
+
+
+@crm_app.command("start")
+def crm_start() -> None:
+    """Queue the autodialer start macro for the paired CashlyCRM browser."""
+    _queue_crm_macro("start")
+
+
+@crm_app.command("pause")
+def crm_pause() -> None:
+    """Queue the autodialer pause macro for the paired CashlyCRM browser."""
+    _queue_crm_macro("pause")
+
+
+@crm_app.command("resume")
+def crm_resume() -> None:
+    """Queue the autodialer resume macro for the paired CashlyCRM browser."""
+    _queue_crm_macro("resume")
+
+
+@crm_app.command("stop")
+def crm_stop() -> None:
+    """Queue the autodialer stop macro for the paired CashlyCRM browser."""
+    _queue_crm_macro("stop")
+
+
+@crm_app.command("macro")
+def crm_macro(action: str = typer.Argument(..., help="Autodialer action to queue.")) -> None:
+    """Queue an autodialer macro by action name."""
+    _queue_crm_macro(action)
+
+
+def _queue_crm_macro(action: str) -> None:
     try:
-        command = send_next_contact_macro()
+        command = send_autodialer_macro(action)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     except CrmAuthError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -196,7 +233,9 @@ def crm_next_contact() -> None:
 def hotkeys_status() -> None:
     """Show configured hotkey bindings and host support guidance."""
     report = inspect_host()
-    typer.echo(f"next_contact={next_contact_hotkey()}")
+    for spec in autodialer_macro_specs():
+        key = spec.action.replace("-", "_")
+        typer.echo(f"{key}={autodialer_macro_hotkey(spec.action)}")
     typer.echo(f"hotkey_support={report.hotkey_support}")
     typer.echo(f"recommended_backend={report.recommended_backend}")
     typer.echo(f"containerized={str(report.is_container).lower()}")
