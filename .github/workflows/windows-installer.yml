@@ -73,6 +73,9 @@ jobs:
           Download CashlyCTLSetup-latest.exe, run it, then open Windows Terminal and run:
 
               cashlyctl console
+
+          Setup guide:
+          https://raw.githubusercontent.com/goCashly/cashlyctl/cashlyctl-windows/WINDOWS_SETUP.md
           "@
 
           gh release view windows-latest *> $null

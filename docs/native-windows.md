@@ -20,6 +20,14 @@ The terminal window can be minimized while `cashlyctl hotkeys start` is running.
 
 ## Download
 
+For an end-user setup walkthrough, see the root Windows guide:
+
+[WINDOWS_SETUP.md](../WINDOWS_SETUP.md)
+
+AI assistants that cannot read GitHub's web page can use the raw Markdown guide:
+
+https://raw.githubusercontent.com/goCashly/cashlyctl/cashlyctl-windows/WINDOWS_SETUP.md
+
 Download the latest unsigned installer built from the `cashlyctl-windows` branch:
 
 [CashlyCTLSetup-latest.exe](https://github.com/goCashly/cashlyctl/releases/download/windows-latest/CashlyCTLSetup-latest.exe)

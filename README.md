@@ -67,6 +67,14 @@ The manual installer creates a user-local venv under
 
 ## Windows Install And Setup
 
+Full setup guide:
+
+[WINDOWS_SETUP.md](WINDOWS_SETUP.md)
+
+AI assistants that cannot read GitHub's web page can use the raw Markdown guide:
+
+https://raw.githubusercontent.com/goCashly/cashlyctl/cashlyctl-windows/WINDOWS_SETUP.md
+
 1. Download the latest Windows installer:
 
 [Download CashlyCTLSetup-latest.exe](https://github.com/goCashly/cashlyctl/releases/download/windows-latest/CashlyCTLSetup-latest.exe)
